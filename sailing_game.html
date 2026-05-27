@@ -102,6 +102,7 @@ let pirates = [];
 let wakeParticles = [];
 let oceanOffset = 0;
 let highScore = 0;
+let spawnTimer = 0;
 
 // ============================================================
 // INPUT HANDLING
@@ -179,13 +180,25 @@ function updatePlayer() {
 // ============================================================
 // PIRATES
 // ============================================================
+
+// Returns a multiplier that grows from 1.0 → ~2.5 as the level progresses.
+// Resets each level so early waves always feel manageable.
+function getTimeScale() {
+  const lvl = LEVELS[currentLevel];
+  if (!lvl) return 1;
+  const t = Math.min(1, levelFrames / lvl.duration);
+  return 1 + t * 1.5;
+}
+
 function spawnPirates() {
   const lvl = LEVELS[currentLevel];
-  const count = lvl.spawnCount + (Math.random() < 0.3 ? 1 : 0);
+  const scale = getTimeScale();
+  const scaledSpeed = lvl.pirateSpeed * scale;
+  const count = Math.min(6, Math.floor(lvl.spawnCount * (1 + (scale - 1) * 0.7)) + (Math.random() < 0.4 ? 1 : 0));
   for (let i = 0; i < count; i++) {
     const pattern = lvl.patterns[Math.floor(Math.random() * lvl.patterns.length)];
     const x = Math.random() * (W - 60) + 30;
-    pirates.push(createPirate(x, -40, pattern, lvl.pirateSpeed));
+    pirates.push(createPirate(x, -40, pattern, scaledSpeed));
   }
 }
 
@@ -420,6 +433,7 @@ function startGame() {
   player.x = W / 2;
   player.vx = 0;
   player.invincible = false;
+  spawnTimer = 60;
   state = STATES.LEVEL_TRANSITION;
   transitionTimer = 180;
 }
@@ -441,6 +455,7 @@ function advanceLevel() {
   }
   pirates = [];
   levelFrames = 0;
+  spawnTimer = 60;
   state = STATES.LEVEL_TRANSITION;
   transitionTimer = 240;
 }
@@ -909,10 +924,15 @@ function update() {
     updatePlayer();
     updateParticles();
 
-    // Spawn pirates
+    // Spawn pirates — interval shrinks as scale grows
     const lvl = LEVELS[currentLevel];
-    if (lvl && levelFrames % lvl.spawnInterval === 0) {
-      spawnPirates();
+    if (lvl) {
+      const dynamicInterval = Math.max(18, Math.floor(lvl.spawnInterval / getTimeScale()));
+      spawnTimer--;
+      if (spawnTimer <= 0) {
+        spawnPirates();
+        spawnTimer = dynamicInterval;
+      }
     }
 
     updatePirates();
