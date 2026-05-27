@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sailing Adventure</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: monospace;
+  }
+  #gameCanvas {
+    display: block;
+    image-rendering: pixelated;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="700"></canvas>
+<script>
+// ============================================================
+// GAME STATE / CONSTANTS
+// ============================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const W = 480;
+const H = 700;
+const HUD_H = 60;
+const PLAY_H = H - HUD_H;
+
+const STATES = {
+  TITLE: 'title',
+  PLAYING: 'playing',
+  LEVEL_TRANSITION: 'level_transition',
+  COLLISION: 'collision',
+  GAME_OVER: 'game_over',
+  WIN: 'win',
+};
+
+const LEVELS = [
+  {
+    name: 'Level 1 — Calm Waters',
+    pirateSpeed: 1.2,
+    spawnInterval: 180,
+    spawnCount: 1,
+    patterns: ['straight'],
+    duration: 1800,
+  },
+  {
+    name: 'Level 2 — Choppy Seas',
+    pirateSpeed: 1.8,
+    spawnInterval: 140,
+    spawnCount: 1,
+    patterns: ['straight', 'diagonal'],
+    duration: 1800,
+  },
+  {
+    name: 'Level 3 — Pirate Alley',
+    pirateSpeed: 2.4,
+    spawnInterval: 100,
+    spawnCount: 2,
+    patterns: ['straight', 'diagonal', 'zigzag'],
+    duration: 1800,
+  },
+  {
+    name: 'Level 4 — Storm Chase',
+    pirateSpeed: 3.0,
+    spawnInterval: 70,
+    spawnCount: 2,
+    patterns: ['straight', 'diagonal', 'zigzag', 'homing'],
+    duration: 1800,
+  },
+  {
+    name: 'Level 5 — The Gauntlet',
+    pirateSpeed: 3.8,
+    spawnInterval: 45,
+    spawnCount: 3,
+    patterns: ['straight', 'diagonal', 'zigzag', 'homing'],
+    duration: 2400,
+  },
+];
+
+// ============================================================
+// GAME STATE
+// ============================================================
+let state = STATES.TITLE;
+let currentLevel = 0;
+let lives = 3;
+let score = 0;
+let frameCount = 0;
+let levelFrames = 0;
+let transitionTimer = 0;
+let collisionTimer = 0;
+let particles = [];
+let pirates = [];
+let wakeParticles = [];
+let oceanOffset = 0;
+let highScore = 0;
+
+// ============================================================
+// INPUT HANDLING
+// ============================================================
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') handleSpacePress();
+  if (e.code === 'KeyR') handleRestart();
+  e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function handleSpacePress() {
+  if (state === STATES.TITLE) {
+    startGame();
+  } else if (state === STATES.LEVEL_TRANSITION) {
+    state = STATES.PLAYING;
+    transitionTimer = 0;
+  } else if (state === STATES.GAME_OVER || state === STATES.WIN) {
+    resetGame();
+  }
+}
+
+function handleRestart() {
+  if (state === STATES.GAME_OVER || state === STATES.WIN || state === STATES.TITLE) {
+    resetGame();
+  }
+}
+
+// ============================================================
+// PLAYER (BOAT)
+// ============================================================
+const player = {
+  x: W / 2,
+  y: PLAY_H - 120,
+  w: 28,
+  h: 42,
+  vx: 0,
+  speed: 4.5,
+  friction: 0.82,
+  invincible: false,
+  invincibleTimer: 0,
+};
+
+function updatePlayer() {
+  const steering = (keys['ArrowLeft'] || keys['KeyA']) ? -1
+    : (keys['ArrowRight'] || keys['KeyD']) ? 1 : 0;
+
+  player.vx += steering * 0.6;
+  player.vx *= player.friction;
+  player.vx = Math.max(-player.speed, Math.min(player.speed, player.vx));
+  player.x += player.vx;
+  player.x = Math.max(player.w / 2, Math.min(W - player.w / 2, player.x));
+
+  if (player.invincible) {
+    player.invincibleTimer--;
+    if (player.invincibleTimer <= 0) player.invincible = false;
+  }
+
+  if (frameCount % 3 === 0) {
+    wakeParticles.push({
+      x: player.x + (Math.random() - 0.5) * 10,
+      y: player.y + player.h / 2,
+      vx: (Math.random() - 0.5) * 0.8,
+      vy: Math.random() * 1.5 + 0.5,
+      life: 35,
+      maxLife: 35,
+      r: Math.random() * 4 + 2,
+    });
+  }
+}
+
+// ============================================================
+// PIRATES
+// ============================================================
+function spawnPirates() {
+  const lvl = LEVELS[currentLevel];
+  const count = lvl.spawnCount + (Math.random() < 0.3 ? 1 : 0);
+  for (let i = 0; i < count; i++) {
+    const pattern = lvl.patterns[Math.floor(Math.random() * lvl.patterns.length)];
+    const x = Math.random() * (W - 60) + 30;
+    pirates.push(createPirate(x, -40, pattern, lvl.pirateSpeed));
+  }
+}
+
+function createPirate(x, y, pattern, speed) {
+  const angle = (Math.random() - 0.5) * 0.8;
+  return {
+    x, y,
+    w: 30, h: 36,
+    pattern,
+    speed,
+    baseSpeed: speed,
+    vx: pattern === 'diagonal' ? Math.sin(angle) * speed : 0,
+    vy: Math.cos(angle >= 0 ? angle : -angle) * speed,
+    zigDir: 1,
+    zigTimer: 0,
+    zigPeriod: 60 + Math.random() * 60,
+    color: `hsl(${Math.random() * 30 + 5}, 60%, 22%)`,
+    skulkOffset: Math.random() * Math.PI * 2,
+  };
+}
+
+function updatePirates() {
+  for (let i = pirates.length - 1; i >= 0; i--) {
+    const p = pirates[i];
+
+    switch (p.pattern) {
+      case 'straight':
+        p.vy = p.speed;
+        p.vx *= 0.95;
+        break;
+      case 'diagonal':
+        if (p.x <= p.w / 2 || p.x >= W - p.w / 2) p.vx *= -1;
+        break;
+      case 'zigzag':
+        p.zigTimer++;
+        if (p.zigTimer >= p.zigPeriod) {
+          p.zigTimer = 0;
+          p.zigDir *= -1;
+        }
+        p.vx = p.zigDir * p.speed * 0.7;
+        p.vy = p.speed * 0.8;
+        break;
+      case 'homing':
+        const dx = player.x - p.x;
+        p.vx += Math.sign(dx) * 0.08;
+        p.vx = Math.max(-p.speed * 0.8, Math.min(p.speed * 0.8, p.vx));
+        p.vy = p.speed * 0.9;
+        break;
+    }
+
+    p.x += p.vx;
+    p.y += p.vy;
+
+    if (p.pattern === 'diagonal') {
+      if (p.x < p.w / 2) { p.x = p.w / 2; p.vx = Math.abs(p.vx); }
+      if (p.x > W - p.w / 2) { p.x = W - p.w / 2; p.vx = -Math.abs(p.vx); }
+    }
+
+    if (p.y > H + 50) {
+      pirates.splice(i, 1);
+      score += 10;
+      continue;
+    }
+
+    if (!player.invincible && checkCollision(player, p)) {
+      handleCollision(p);
+      pirates.splice(i, 1);
+    }
+  }
+}
+
+function checkCollision(a, b) {
+  return Math.abs(a.x - b.x) < (a.w / 2 + b.w / 2) - 4
+    && Math.abs(a.y - b.y) < (a.h / 2 + b.h / 2) - 4;
+}
+
+function handleCollision(pirate) {
+  spawnExplosion(player.x, player.y);
+  playCollisionSound();
+  lives--;
+  player.invincible = true;
+  player.invincibleTimer = 150;
+  state = STATES.COLLISION;
+  collisionTimer = 90;
+
+  if (lives <= 0) {
+    setTimeout(() => {
+      state = STATES.GAME_OVER;
+      if (score > highScore) highScore = score;
+    }, 1200);
+  }
+}
+
+// ============================================================
+// PARTICLES
+// ============================================================
+function spawnExplosion(x, y) {
+  for (let i = 0; i < 30; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 4 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 60,
+      maxLife: 60,
+      r: Math.random() * 5 + 2,
+      color: `hsl(${Math.random() * 40 + 20}, 100%, ${50 + Math.random() * 30}%)`,
+      type: 'explosion',
+    });
+  }
+  for (let i = 0; i < 20; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 2 + 0.5;
+    particles.push({
+      x: x + (Math.random() - 0.5) * 30,
+      y: y + (Math.random() - 0.5) * 30,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1,
+      life: 80,
+      maxLife: 80,
+      r: Math.random() * 6 + 3,
+      color: 'rgba(255,255,255,',
+      type: 'foam',
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.92;
+    p.vy *= 0.92;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = wakeParticles.length - 1; i >= 0; i--) {
+    const p = wakeParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life--;
+    if (p.life <= 0) wakeParticles.splice(i, 1);
+  }
+}
+
+// ============================================================
+// AUDIO
+// ============================================================
+let audioCtx = null;
+let sailingOscillator = null;
+let sailingGain = null;
+
+function initAudio() {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    startSailingHum();
+  } catch (e) {}
+}
+
+function startSailingHum() {
+  if (!audioCtx) return;
+  sailingGain = audioCtx.createGain();
+  sailingGain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+  sailingGain.connect(audioCtx.destination);
+  sailingOscillator = audioCtx.createOscillator();
+  sailingOscillator.type = 'sine';
+  sailingOscillator.frequency.setValueAtTime(80, audioCtx.currentTime);
+  sailingOscillator.connect(sailingGain);
+  sailingOscillator.start();
+}
+
+function playCollisionSound() {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(55, audioCtx.currentTime + 0.4);
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.5);
+}
+
+function playLevelCompleteSound() {
+  if (!audioCtx) return;
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + i * 0.15);
+    gain.gain.setValueAtTime(0.2, audioCtx.currentTime + i * 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + i * 0.15 + 0.3);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(audioCtx.currentTime + i * 0.15);
+    osc.stop(audioCtx.currentTime + i * 0.15 + 0.4);
+  });
+}
+
+// ============================================================
+// LEVEL MANAGEMENT
+// ============================================================
+function startGame() {
+  if (!audioCtx) initAudio();
+  currentLevel = 0;
+  lives = 3;
+  score = 0;
+  frameCount = 0;
+  levelFrames = 0;
+  pirates = [];
+  particles = [];
+  wakeParticles = [];
+  player.x = W / 2;
+  player.vx = 0;
+  player.invincible = false;
+  state = STATES.LEVEL_TRANSITION;
+  transitionTimer = 180;
+}
+
+function resetGame() {
+  state = STATES.TITLE;
+  pirates = [];
+  particles = [];
+  wakeParticles = [];
+}
+
+function advanceLevel() {
+  playLevelCompleteSound();
+  currentLevel++;
+  if (currentLevel >= LEVELS.length) {
+    state = STATES.WIN;
+    if (score > highScore) highScore = score;
+    return;
+  }
+  pirates = [];
+  levelFrames = 0;
+  state = STATES.LEVEL_TRANSITION;
+  transitionTimer = 240;
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+function drawOcean() {
+  oceanOffset = (oceanOffset + 1.2) % 80;
+  const grad = ctx.createLinearGradient(0, HUD_H, 0, H);
+  grad.addColorStop(0, '#0a3d6b');
+  grad.addColorStop(1, '#051d35');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, HUD_H, W, PLAY_H);
+
+  for (let row = 0; row < 20; row++) {
+    const y = HUD_H + ((row * 40 + oceanOffset) % (PLAY_H + 40)) - 20;
+    const alpha = 0.06 + Math.sin(row * 0.7 + frameCount * 0.02) * 0.03;
+    ctx.fillStyle = `rgba(100,180,255,${alpha})`;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 4) {
+      const wave = Math.sin(x * 0.04 + row * 1.3 + frameCount * 0.03) * 4;
+      if (x === 0) ctx.moveTo(x, y + wave);
+      else ctx.lineTo(x, y + wave);
+    }
+    ctx.lineTo(W, y + 12);
+    ctx.lineTo(0, y + 12);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const sx = (i * 97 + frameCount * 0.5) % W;
+    const sy = HUD_H + ((i * 113 + oceanOffset * 2) % PLAY_H);
+    ctx.strokeStyle = 'rgba(200,230,255,0.15)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + 30, sy + 8);
+    ctx.stroke();
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#0b2240';
+  ctx.fillRect(0, 0, W, HUD_H);
+  ctx.strokeStyle = '#1a4a80';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, HUD_H);
+  ctx.lineTo(W, HUD_H);
+  ctx.stroke();
+
+  ctx.fillStyle = '#7ecfff';
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(LEVELS[currentLevel] ? LEVELS[currentLevel].name : 'Victory!', 10, 18);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 14px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Score: ${score}`, W - 10, 18);
+
+  for (let i = 0; i < 3; i++) {
+    drawHeart(10 + i * 26, 30, i < lives);
+  }
+
+  const lvl = LEVELS[currentLevel];
+  if (lvl) {
+    const progress = Math.min(1, levelFrames / lvl.duration);
+    ctx.fillStyle = '#1a3a5a';
+    ctx.fillRect(W / 2 - 80, 34, 160, 12);
+    ctx.fillStyle = progress > 0.7 ? '#ff6b35' : '#2ecc71';
+    ctx.fillRect(W / 2 - 80, 34, 160 * progress, 12);
+    ctx.strokeStyle = '#2a5a8a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(W / 2 - 80, 34, 160, 12);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PROGRESS', W / 2, 43);
+  }
+}
+
+function drawHeart(x, y, filled) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(0.7, 0.7);
+  ctx.beginPath();
+  ctx.moveTo(0, -6);
+  ctx.bezierCurveTo(-10, -16, -20, -6, 0, 8);
+  ctx.bezierCurveTo(20, -6, 10, -16, 0, -6);
+  ctx.fillStyle = filled ? '#e74c3c' : '#333';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPlayer() {
+  if (player.invincible && Math.floor(frameCount / 5) % 2 === 0) return;
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.beginPath();
+  ctx.moveTo(0, -player.h / 2);
+  ctx.lineTo(player.w / 2, player.h / 4);
+  ctx.lineTo(player.w / 3, player.h / 2);
+  ctx.lineTo(-player.w / 3, player.h / 2);
+  ctx.lineTo(-player.w / 2, player.h / 4);
+  ctx.closePath();
+  ctx.fillStyle = '#2a5ca8';
+  ctx.fill();
+  ctx.strokeStyle = '#1a3c78';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.strokeStyle = '#8b5e3c';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(0, player.h / 4);
+  ctx.lineTo(0, -player.h / 2 - 10);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -player.h / 2 - 8);
+  ctx.lineTo(player.w / 2 + 4, -player.h / 6);
+  ctx.lineTo(0, player.h / 6);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(240,240,255,0.92)';
+  ctx.fill();
+  ctx.strokeStyle = '#aaa';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -player.h / 2 - 8);
+  ctx.lineTo(player.w / 4, -player.h / 6);
+  ctx.lineTo(0, player.h / 6);
+  ctx.fillStyle = 'rgba(180,190,220,0.3)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPirate(p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.beginPath();
+  ctx.moveTo(0, -p.h / 2);
+  ctx.lineTo(p.w / 2, p.h / 4);
+  ctx.lineTo(p.w / 2 - 4, p.h / 2);
+  ctx.lineTo(-p.w / 2 + 4, p.h / 2);
+  ctx.lineTo(-p.w / 2, p.h / 4);
+  ctx.closePath();
+  ctx.fillStyle = p.color;
+  ctx.fill();
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.strokeStyle = '#5a3a1a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, p.h / 4);
+  ctx.lineTo(0, -p.h / 2 - 8);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -p.h / 2 - 6);
+  ctx.lineTo(-p.w / 2 - 2, -p.h / 6);
+  ctx.lineTo(0, p.h / 6);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(20,20,20,0.9)';
+  ctx.fill();
+  const sk = { x: -p.w / 6, y: -p.h / 6 };
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(sk.x, sk.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(20,20,20,0.9)';
+  ctx.beginPath();
+  ctx.arc(sk.x - 2, sk.y - 1, 1.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(sk.x + 2, sk.y - 1, 1.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sk.x - 4, sk.y + 5);
+  ctx.lineTo(sk.x + 4, sk.y + 9);
+  ctx.moveTo(sk.x + 4, sk.y + 5);
+  ctx.lineTo(sk.x - 4, sk.y + 9);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWake() {
+  for (const p of wakeParticles) {
+    const alpha = (p.life / p.maxLife) * 0.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(180,220,255,${alpha})`;
+    ctx.fill();
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    if (p.type === 'foam') {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${alpha * 0.8})`;
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = alpha;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#051d35';
+  ctx.fillRect(0, 0, W, H);
+  drawOcean();
+  ctx.fillStyle = 'rgba(5,29,53,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 42px monospace';
+  ctx.fillText('SAILING', W / 2, H / 2 - 100);
+  ctx.fillStyle = '#7ecfff';
+  ctx.font = 'bold 36px monospace';
+  ctx.fillText('ADVENTURE', W / 2, H / 2 - 55);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px monospace';
+  ctx.fillText('Navigate the seas, avoid pirate ships!', W / 2, H / 2 + 10);
+  ctx.fillStyle = '#eee';
+  ctx.font = '13px monospace';
+  ctx.fillText('Arrow keys or A/D to steer', W / 2, H / 2 + 50);
+  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#ffd700' : '#ff6b35';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText('PRESS SPACE TO SAIL', W / 2, H / 2 + 100);
+  if (highScore > 0) {
+    ctx.fillStyle = '#7ecfff';
+    ctx.font = '13px monospace';
+    ctx.fillText(`Best: ${highScore}`, W / 2, H / 2 + 135);
+  }
+  const bx = W / 2, by = H / 2 - 170;
+  ctx.save();
+  ctx.translate(bx, by);
+  ctx.beginPath();
+  ctx.moveTo(0, -18);
+  ctx.lineTo(14, 8);
+  ctx.lineTo(11, 18);
+  ctx.lineTo(-11, 18);
+  ctx.lineTo(-14, 8);
+  ctx.closePath();
+  ctx.fillStyle = '#2a5ca8';
+  ctx.fill();
+  ctx.strokeStyle = '#1a3c78';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.strokeStyle = '#8b5e3c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 8);
+  ctx.lineTo(0, -22);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, -20);
+  ctx.lineTo(18, -4);
+  ctx.lineTo(0, 10);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(240,240,255,0.92)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawLevelTransition() {
+  drawOcean();
+  drawWake();
+  ctx.fillStyle = 'rgba(5,20,40,0.75)';
+  ctx.fillRect(0, HUD_H, W, PLAY_H);
+  const lvl = LEVELS[currentLevel];
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px monospace';
+  ctx.fillText(lvl.name, W / 2, H / 2 - 40);
+  ctx.fillStyle = '#aad4ff';
+  ctx.font = '14px monospace';
+  const descriptions = [
+    'Calm waters ahead. Watch for slow pirate ships.',
+    'The seas are choppy. Pirates move at angles!',
+    'Enter the Pirate Alley. Zigzag patterns ahead!',
+    'Storm Chase! Fast pirates accelerating your way.',
+    'The Gauntlet! All patterns — survive to win!',
+  ];
+  ctx.fillText(descriptions[currentLevel] || '', W / 2, H / 2 + 0);
+  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#fff' : '#7ecfff';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('PRESS SPACE TO CONTINUE', W / 2, H / 2 + 50);
+  if (currentLevel > 0) {
+    ctx.fillStyle = '#7ecfff';
+    ctx.font = '13px monospace';
+    ctx.fillText(`Score so far: ${score}`, W / 2, H / 2 + 85);
+  }
+  drawHUD();
+}
+
+function drawGameOver() {
+  drawOcean();
+  ctx.fillStyle = 'rgba(10,5,5,0.8)';
+  ctx.fillRect(0, HUD_H, W, PLAY_H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e74c3c';
+  ctx.font = 'bold 36px monospace';
+  ctx.fillText('SHIPWRECKED!', W / 2, H / 2 - 60);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(`Final Score: ${score}`, W / 2, H / 2 - 10);
+  if (score >= highScore && score > 0) {
+    ctx.fillStyle = '#2ecc71';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 20);
+  }
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px monospace';
+  ctx.fillText(`Best: ${highScore}`, W / 2, H / 2 + 48);
+  const bw = 180, bh = 40, bx = W / 2 - bw / 2, by = H / 2 + 70;
+  ctx.fillStyle = '#c0392b';
+  ctx.fillRect(bx, by, bw, bh);
+  ctx.strokeStyle = '#e74c3c';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(bx, by, bw, bh);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 15px monospace';
+  ctx.fillText('PRESS SPACE TO RESTART', W / 2, by + 25);
+}
+
+function drawWin() {
+  drawOcean();
+  ctx.fillStyle = 'rgba(0,20,10,0.8)';
+  ctx.fillRect(0, HUD_H, W, PLAY_H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 32px monospace';
+  ctx.fillText('YOU WIN!', W / 2, H / 2 - 80);
+  ctx.fillStyle = '#2ecc71';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText('All 5 seas conquered!', W / 2, H / 2 - 40);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(`Final Score: ${score}`, W / 2, H / 2);
+  if (score >= highScore) {
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 30);
+  }
+  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#fff' : '#7ecfff';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('PRESS SPACE TO PLAY AGAIN', W / 2, H / 2 + 80);
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + frameCount * 0.01;
+    const r = 80 + Math.sin(frameCount * 0.05 + i) * 10;
+    const sx = W / 2 + Math.cos(angle) * r;
+    const sy = H / 2 - 20 + Math.sin(angle) * r * 0.4;
+    drawStar(sx, sy, 5, `hsl(${(i * 45 + frameCount) % 360}, 100%, 65%)`);
+  }
+}
+
+function drawStar(x, y, r, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+    const ir = r * 0.4;
+    const ia = ((i * 4 + 2) * Math.PI) / 5 - Math.PI / 2;
+    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    ctx.lineTo(Math.cos(ia) * ir, Math.sin(ia) * ir);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+function update() {
+  frameCount++;
+  oceanOffset = (oceanOffset + 1.2) % 80;
+
+  if (state === STATES.PLAYING) {
+    levelFrames++;
+    score += 1;
+    updatePlayer();
+    updateParticles();
+    const lvl = LEVELS[currentLevel];
+    if (lvl && levelFrames % lvl.spawnInterval === 0) spawnPirates();
+    updatePirates();
+    if (lvl && levelFrames >= lvl.duration && pirates.length === 0) {
+      score += 500;
+      advanceLevel();
+    }
+  } else if (state === STATES.COLLISION) {
+    collisionTimer--;
+    updateParticles();
+    updatePlayer();
+    if (collisionTimer <= 0 && lives > 0) state = STATES.PLAYING;
+  } else if (state === STATES.LEVEL_TRANSITION) {
+    updateParticles();
+    updatePlayer();
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === STATES.TITLE) { drawTitle(); return; }
+  if (state === STATES.GAME_OVER) { drawGameOver(); drawParticles(); return; }
+  if (state === STATES.WIN) { drawWin(); drawParticles(); return; }
+  if (state === STATES.LEVEL_TRANSITION) { drawLevelTransition(); return; }
+  drawOcean();
+  drawWake();
+  drawParticles();
+  for (const p of pirates) drawPirate(p);
+  drawPlayer();
+  drawHUD();
+  if (state === STATES.COLLISION) {
+    const alpha = Math.min(0.6, collisionTimer / 90 * 0.6);
+    ctx.fillStyle = `rgba(255, 50, 50, ${alpha})`;
+    ctx.fillRect(0, HUD_H, W, PLAY_H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 28px monospace';
+    ctx.fillText(lives > 0 ? 'COLLISION!' : 'SUNK!', W / 2, H / 2);
+  }
+}
+
+function gameLoop() {
+  update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+canvas.addEventListener('click', e => {
+  if (state === STATES.GAME_OVER || state === STATES.WIN) resetGame();
+  else if (state === STATES.TITLE) startGame();
+  else if (state === STATES.LEVEL_TRANSITION) state = STATES.PLAYING;
+});
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
