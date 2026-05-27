@@ -3,1033 +3,1854 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sailing Adventure</title>
+<title>High Seas - Sailing Game</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #1a1a2e;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-    font-family: monospace;
+  html, body {
+    margin: 0; padding: 0; background: #0a1420; height: 100%;
+    overflow: hidden; font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    -webkit-user-select: none; user-select: none;
   }
-  #gameCanvas {
-    display: block;
-    image-rendering: pixelated;
+  #wrap {
+    display: flex; align-items: center; justify-content: center;
+    width: 100vw; height: 100vh;
+  }
+  canvas {
+    background: #102438; box-shadow: 0 0 40px rgba(0,0,0,0.7);
+    border-radius: 6px; cursor: pointer; image-rendering: auto;
   }
 </style>
 </head>
 <body>
-<canvas id="gameCanvas" width="480" height="700"></canvas>
+<div id="wrap">
+  <canvas id="game" width="480" height="700"></canvas>
+</div>
 <script>
-// ============================================================
-// GAME STATE / CONSTANTS
-// ============================================================
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+"use strict";
 
-const W = 480;
-const H = 700;
+/* ============================================================
+   SECTION 1: CONSTANTS + LEVEL / SKIN DATA
+   ============================================================ */
+const CANVAS_W = 480;
+const CANVAS_H = 700;
 const HUD_H = 60;
-const PLAY_H = H - HUD_H;
+const PLAY_TOP = HUD_H;              // top of the play area (y)
+const PLAY_H = CANVAS_H - HUD_H;     // height of play area
+const SAVE_KEY = 'sailing_save';
 
-const STATES = {
-  TITLE: 'title',
-  PLAYING: 'playing',
-  LEVEL_TRANSITION: 'level_transition',
-  COLLISION: 'collision',
-  GAME_OVER: 'game_over',
-  WIN: 'win',
+// Screen state constants
+const S = {
+  MENU: 'MENU',
+  LEVEL_SELECT: 'LEVEL_SELECT',
+  SHOP: 'SHOP',
+  SETTINGS: 'SETTINGS',
+  PLAYING: 'PLAYING',
+  TRANSITION: 'TRANSITION',
+  LEVEL_COMPLETE: 'LEVEL_COMPLETE',
+  GAME_OVER: 'GAME_OVER',
+  WIN: 'WIN'
 };
 
-const LEVELS = [
-  {
-    name: 'Level 1 — Calm Waters',
-    pirateSpeed: 1.2,
-    spawnInterval: 180,
-    spawnCount: 1,
-    patterns: ['straight'],
-    duration: 1800, // frames
-  },
-  {
-    name: 'Level 2 — Choppy Seas',
-    pirateSpeed: 1.8,
-    spawnInterval: 140,
-    spawnCount: 1,
-    patterns: ['straight', 'diagonal'],
-    duration: 1800,
-  },
-  {
-    name: 'Level 3 — Pirate Alley',
-    pirateSpeed: 2.4,
-    spawnInterval: 100,
-    spawnCount: 2,
-    patterns: ['straight', 'diagonal', 'zigzag'],
-    duration: 1800,
-  },
-  {
-    name: 'Level 4 — Storm Chase',
-    pirateSpeed: 3.0,
-    spawnInterval: 70,
-    spawnCount: 2,
-    patterns: ['straight', 'diagonal', 'zigzag', 'homing'],
-    duration: 1800,
-  },
-  {
-    name: 'Level 5 — The Gauntlet',
-    pirateSpeed: 3.8,
-    spawnInterval: 45,
-    spawnCount: 3,
-    patterns: ['straight', 'diagonal', 'zigzag', 'homing'],
-    duration: 2400,
-  },
+// Boat skins
+const SKINS = [
+  { id:'default',  name:'Sailor Blue',    cost:0,    hull:'#2a5ca8', sail:'rgba(240,240,255,0.92)' },
+  { id:'crimson',  name:'Crimson Tide',   cost:50,   hull:'#c0392b', sail:'rgba(255,210,210,0.92)' },
+  { id:'emerald',  name:'Sea Serpent',    cost:100,  hull:'#27ae60', sail:'rgba(210,255,220,0.92)' },
+  { id:'gold',     name:'Golden Galleon', cost:250,  hull:'#d4ac0d', sail:'rgba(255,240,150,0.92)' },
+  { id:'violet',   name:'Royal Navy',     cost:400,  hull:'#7d3c98', sail:'rgba(230,210,255,0.92)' },
+  { id:'obsidian', name:'Shadow Runner',  cost:600,  hull:'#1c2833', sail:'rgba(80,90,110,0.92)'   },
+  { id:'frost',    name:'Arctic Fox',     cost:800,  hull:'#5dade2', sail:'rgba(210,240,255,0.92)' },
+  { id:'inferno',  name:'Fire Drake',     cost:1200, hull:'#922b21', sail:'rgba(255,160,60,0.92)'  }
 ];
 
-// ============================================================
-// GAME STATE
-// ============================================================
-let state = STATES.TITLE;
-let currentLevel = 0;
-let lives = 3;
-let score = 0;
-let frameCount = 0;
-let levelFrames = 0;
-let transitionTimer = 0;
-let collisionTimer = 0;
-let particles = [];
-let pirates = [];
-let wakeParticles = [];
-let oceanOffset = 0;
-let highScore = 0;
-let spawnTimer = 0;
-
-// ============================================================
-// INPUT HANDLING
-// ============================================================
-const keys = {};
-window.addEventListener('keydown', e => {
-  keys[e.code] = true;
-  if (e.code === 'Space') handleSpacePress();
-  if (e.code === 'KeyR') handleRestart();
-  e.preventDefault();
-});
-window.addEventListener('keyup', e => { keys[e.code] = false; });
-
-function handleSpacePress() {
-  if (state === STATES.TITLE) {
-    startGame();
-  } else if (state === STATES.LEVEL_TRANSITION) {
-    state = STATES.PLAYING;
-    transitionTimer = 0;
-  } else if (state === STATES.GAME_OVER || state === STATES.WIN) {
-    resetGame();
-  }
+// 20 levels. Defaults filled by makeLevel(); only deviations specified.
+// oc1/oc2 = ocean gradient colours, wc = wave-band colour.
+function makeLevel(o){
+  return Object.assign({
+    name: 'Level', subtitle: '',
+    oc1: '#1a4a6e', oc2: '#0d2840', wc: 'rgba(255,255,255,0.06)',
+    pirateSpeed: 2.0, spawnInterval: 120, spawnCount: 1,
+    patterns: ['straight'],
+    fireRate: 0, fireSpeed: 3.2, shots: 1, spread: 0.35,
+    duration: 1800, maxTimeScale: 1.8, coinRate: 150,
+    fog: 0, wind: 0, ghost: false, ice: false
+  }, o);
 }
 
-function handleRestart() {
-  if (state === STATES.GAME_OVER || state === STATES.WIN || state === STATES.TITLE) {
-    resetGame();
-  }
-}
+const LEVELS = [
+  makeLevel({ name:'Calm Waters',     subtitle:'Just you and the open sea.',
+    patterns:['straight'], pirateSpeed:1.2, spawnInterval:200, spawnCount:1,
+    fireRate:0, duration:1800, maxTimeScale:1.6, coinRate:130,
+    oc1:'#1f5e8c', oc2:'#0e3050' }),
+  makeLevel({ name:'Choppy Seas',     subtitle:'The waters grow restless.',
+    patterns:['straight','diagonal'], pirateSpeed:1.6, spawnInterval:165, spawnCount:1,
+    fireRate:260, fireSpeed:2.8, shots:1, duration:1800, maxTimeScale:1.8, coinRate:140,
+    oc1:'#1a567f', oc2:'#0d2c48' }),
+  makeLevel({ name:'Pirate Cove',     subtitle:'Beware lurking raiders.',
+    patterns:['straight','diagonal','zigzag'], pirateSpeed:2.0, spawnInterval:135, spawnCount:1,
+    fireRate:170, fireSpeed:3.2, shots:1, duration:1900, maxTimeScale:1.9, coinRate:140,
+    oc1:'#1a4a6e', oc2:'#0d2840' }),
+  makeLevel({ name:"Merchant's Path", subtitle:'Run the gauntlet of cannons.',
+    patterns:['straight','diagonal','zigzag'], pirateSpeed:2.3, spawnInterval:115, spawnCount:2,
+    fireRate:150, fireSpeed:3.3, shots:3, spread:0.4, duration:2000, maxTimeScale:2.0, coinRate:150,
+    oc1:'#1a4a6e', oc2:'#0d2840' }),
+  makeLevel({ name:'Homing Hunters',  subtitle:'They track your every move.',
+    patterns:['straight','homing'], pirateSpeed:2.5, spawnInterval:105, spawnCount:2,
+    fireRate:135, fireSpeed:3.4, shots:1, duration:2000, maxTimeScale:2.1, coinRate:150,
+    oc1:'#184460', oc2:'#0b2238' }),
+  makeLevel({ name:'Foggy Night',     subtitle:'Sail blind through the mist.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:2.7, spawnInterval:100, spawnCount:2,
+    fireRate:130, fireSpeed:3.4, shots:2, spread:0.35, duration:2000, maxTimeScale:2.1, coinRate:150,
+    fog:0.55, oc1:'#16384f', oc2:'#0a1c2e' }),
+  makeLevel({ name:'Storm Surge',     subtitle:'The wind drives you starboard.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:3.0, spawnInterval:90, spawnCount:2,
+    fireRate:120, fireSpeed:3.6, shots:2, spread:0.4, duration:2100, maxTimeScale:2.2, coinRate:160,
+    wind:0.28, oc1:'#1c5c4a', oc2:'#0d3026' }),
+  makeLevel({ name:'Cannonade Bay',   subtitle:'Few ships, fierce broadsides.',
+    patterns:['straight','diagonal'], pirateSpeed:2.0, spawnInterval:220, spawnCount:1,
+    fireRate:90, fireSpeed:3.6, shots:3, spread:0.5, duration:2100, maxTimeScale:2.0, coinRate:140,
+    oc1:'#1a4a6e', oc2:'#0d2840' }),
+  makeLevel({ name:'The Swarm',       subtitle:'They come from everywhere.',
+    patterns:['straight','diagonal','zigzag'], pirateSpeed:2.2, spawnInterval:48, spawnCount:4,
+    fireRate:300, fireSpeed:3.0, shots:1, duration:2200, maxTimeScale:2.3, coinRate:130,
+    oc1:'#184460', oc2:'#0b2238' }),
+  makeLevel({ name:'Ghost Waters',    subtitle:'Now you see them...',
+    patterns:['straight','diagonal','homing'], pirateSpeed:3.0, spawnInterval:115, spawnCount:2,
+    fireRate:130, fireSpeed:3.5, shots:2, spread:0.4, duration:2200, maxTimeScale:2.3, coinRate:160,
+    ghost:true, oc1:'#3a2a55', oc2:'#1a1230' }),
+  makeLevel({ name:'Pirate Armada',   subtitle:'The full fleet bears down.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:3.2, spawnInterval:82, spawnCount:3,
+    fireRate:100, fireSpeed:3.8, shots:3, spread:0.45, duration:2400, maxTimeScale:2.4, coinRate:150,
+    oc1:'#1a4a6e', oc2:'#0d2840' }),
+  makeLevel({ name:'Arctic Vortex',   subtitle:'Frozen cannonfire fills the air.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:3.8, spawnInterval:75, spawnCount:2,
+    fireRate:95, fireSpeed:3.8, shots:3, spread:0.45, duration:2400, maxTimeScale:2.5, coinRate:160,
+    ice:true, oc1:'#2d6e8c', oc2:'#123848' }),
+  makeLevel({ name:'Reef Runner',     subtitle:'Weave through the shallows.',
+    patterns:['straight','zigzag','zigzag','diagonal'], pirateSpeed:3.5, spawnInterval:72, spawnCount:3,
+    fireRate:90, fireSpeed:3.9, shots:2, spread:0.4, duration:2500, maxTimeScale:2.5, coinRate:160,
+    oc1:'#157a72', oc2:'#0a3a36' }),
+  makeLevel({ name:'Skull Squadron',  subtitle:'Death sails under black flags.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:4.0, spawnInterval:68, spawnCount:3,
+    fireRate:78, fireSpeed:4.0, shots:3, spread:0.5, duration:2600, maxTimeScale:2.6, coinRate:160,
+    oc1:'#33245a', oc2:'#14102a' }),
+  makeLevel({ name:'Tempest',         subtitle:'Wind and fog conspire against you.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:4.2, spawnInterval:63, spawnCount:3,
+    fireRate:80, fireSpeed:4.1, shots:3, spread:0.5, duration:2600, maxTimeScale:2.7, coinRate:170,
+    wind:0.45, fog:0.30, oc1:'#1c4a4a', oc2:'#0c2828' }),
+  makeLevel({ name:"Kraken's Lair",   subtitle:'Spiraling doom from the deep.',
+    patterns:['spiral','straight','spiral','homing'], pirateSpeed:4.0, spawnInterval:68, spawnCount:3,
+    fireRate:75, fireSpeed:4.0, shots:4, spread:0.55, duration:2800, maxTimeScale:2.7, coinRate:170,
+    oc1:'#103a55', oc2:'#08202f' }),
+  makeLevel({ name:'Inferno Strait',  subtitle:'Sail through fire and ash.',
+    patterns:['straight','diagonal','zigzag','homing'], pirateSpeed:5.0, spawnInterval:52, spawnCount:3,
+    fireRate:65, fireSpeed:4.4, shots:3, spread:0.55, duration:2800, maxTimeScale:2.9, coinRate:170,
+    oc1:'#7a2418', oc2:'#3a120a' }),
+  makeLevel({ name:'Fallen Fleet',    subtitle:'A graveyard of broken ships.',
+    patterns:['straight','diagonal','zigzag','homing','spiral'], pirateSpeed:4.5, spawnInterval:42, spawnCount:5,
+    fireRate:70, fireSpeed:4.3, shots:3, spread:0.5, duration:3000, maxTimeScale:3.0, coinRate:160,
+    oc1:'#2a3245', oc2:'#121624' }),
+  makeLevel({ name:'Armageddon',      subtitle:'The end is nearly upon you.',
+    patterns:['straight','diagonal','zigzag','homing','spiral'], pirateSpeed:5.5, spawnInterval:38, spawnCount:4,
+    fireRate:60, fireSpeed:4.6, shots:5, spread:0.6, duration:3200, maxTimeScale:3.1, coinRate:170,
+    oc1:'#5a1810', oc2:'#280a06' }),
+  makeLevel({ name:"Legend's End",    subtitle:'Become a legend of the seas.',
+    patterns:['straight','diagonal','zigzag','homing','spiral'], pirateSpeed:6.0, spawnInterval:33, spawnCount:5,
+    fireRate:52, fireSpeed:4.8, shots:5, spread:0.65, duration:3600, maxTimeScale:3.3, coinRate:160,
+    wind:0.2, fog:0.2, oc1:'#8a6a14', oc2:'#3a2c08' })
+];
 
-// ============================================================
-// PLAYER (BOAT)
-// ============================================================
-const player = {
-  x: W / 2,
-  y: PLAY_H - 120,
-  w: 28,
-  h: 42,
-  vx: 0,
-  speed: 4.5,
-  friction: 0.82,
-  invincible: false,
-  invincibleTimer: 0,
+// Coin types
+const COIN_TYPES = {
+  bronze: { value:1, r:7,  color:'#cd7f32', shine:'#f0b070' },
+  silver: { value:3, r:9,  color:'#c0c0c0', shine:'#ffffff' },
+  gold:   { value:5, r:12, color:'#ffd700', shine:'#fff7c0' }
 };
 
-function updatePlayer() {
-  const steering = (keys['ArrowLeft'] || keys['KeyA']) ? -1
-    : (keys['ArrowRight'] || keys['KeyD']) ? 1 : 0;
-
-  player.vx += steering * 0.6;
-  player.vx *= player.friction;
-  player.vx = Math.max(-player.speed, Math.min(player.speed, player.vx));
-  player.x += player.vx;
-  player.x = Math.max(player.w / 2, Math.min(W - player.w / 2, player.x));
-
-  if (player.invincible) {
-    player.invincibleTimer--;
-    if (player.invincibleTimer <= 0) player.invincible = false;
-  }
-
-  // Wake particles
-  if (frameCount % 3 === 0) {
-    wakeParticles.push({
-      x: player.x + (Math.random() - 0.5) * 10,
-      y: player.y + player.h / 2,
-      vx: (Math.random() - 0.5) * 0.8,
-      vy: Math.random() * 1.5 + 0.5,
-      life: 35,
-      maxLife: 35,
-      r: Math.random() * 4 + 2,
-    });
-  }
-}
-
-// ============================================================
-// PIRATES
-// ============================================================
-
-// Returns a multiplier that grows from 1.0 → ~2.5 as the level progresses.
-// Resets each level so early waves always feel manageable.
-function getTimeScale() {
-  const lvl = LEVELS[currentLevel];
-  if (!lvl) return 1;
-  const t = Math.min(1, levelFrames / lvl.duration);
-  return 1 + t * 1.5;
-}
-
-function spawnPirates() {
-  const lvl = LEVELS[currentLevel];
-  const scale = getTimeScale();
-  const scaledSpeed = lvl.pirateSpeed * scale;
-  const count = Math.min(6, Math.floor(lvl.spawnCount * (1 + (scale - 1) * 0.7)) + (Math.random() < 0.4 ? 1 : 0));
-  for (let i = 0; i < count; i++) {
-    const pattern = lvl.patterns[Math.floor(Math.random() * lvl.patterns.length)];
-    const x = Math.random() * (W - 60) + 30;
-    pirates.push(createPirate(x, -40, pattern, scaledSpeed));
-  }
-}
-
-function createPirate(x, y, pattern, speed) {
-  const angle = (Math.random() - 0.5) * 0.8; // diagonal angle
+/* ============================================================
+   SECTION 2: PERSISTENCE
+   ============================================================ */
+function defaultSave(){
   return {
-    x, y,
-    w: 30, h: 36,
-    pattern,
-    speed,
-    baseSpeed: speed,
-    vx: pattern === 'diagonal' ? Math.sin(angle) * speed : 0,
-    vy: Math.cos(angle >= 0 ? angle : -angle) * speed,
-    zigDir: 1,
-    zigTimer: 0,
-    zigPeriod: 60 + Math.random() * 60,
-    color: `hsl(${Math.random() * 30 + 5}, 60%, 22%)`,
-    skulkOffset: Math.random() * Math.PI * 2,
+    coins: 0,
+    unlockedLevels: [1],
+    completedLevels: [],
+    ownedSkins: ['default'],
+    selectedSkin: 'default',
+    settings: { music: true, sfx: true }
   };
 }
 
-function updatePirates() {
-  for (let i = pirates.length - 1; i >= 0; i--) {
-    const p = pirates[i];
+let save = defaultSave();
 
-    switch (p.pattern) {
+function loadSave(){
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(raw){
+      const obj = JSON.parse(raw);
+      const def = defaultSave();
+      save = {
+        coins: typeof obj.coins === 'number' ? obj.coins : def.coins,
+        unlockedLevels: Array.isArray(obj.unlockedLevels) && obj.unlockedLevels.length ? obj.unlockedLevels.slice() : def.unlockedLevels,
+        completedLevels: Array.isArray(obj.completedLevels) ? obj.completedLevels.slice() : def.completedLevels,
+        ownedSkins: Array.isArray(obj.ownedSkins) && obj.ownedSkins.length ? obj.ownedSkins.slice() : def.ownedSkins,
+        selectedSkin: typeof obj.selectedSkin === 'string' ? obj.selectedSkin : def.selectedSkin,
+        settings: {
+          music: obj.settings && typeof obj.settings.music === 'boolean' ? obj.settings.music : def.settings.music,
+          sfx:   obj.settings && typeof obj.settings.sfx   === 'boolean' ? obj.settings.sfx   : def.settings.sfx
+        }
+      };
+      if(save.unlockedLevels.indexOf(1) < 0) save.unlockedLevels.push(1);
+      if(save.ownedSkins.indexOf('default') < 0) save.ownedSkins.push('default');
+      if(!SKINS.some(s=>s.id===save.selectedSkin)) save.selectedSkin = 'default';
+    }
+  } catch(e){
+    save = defaultSave();
+  }
+}
+
+function persist(){
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }
+  catch(e){ /* storage may be unavailable; ignore */ }
+}
+
+function unlockLevel(n){
+  if(n >= 1 && n <= LEVELS.length && save.unlockedLevels.indexOf(n) < 0){
+    save.unlockedLevels.push(n);
+  }
+}
+function completeLevel(n){
+  if(save.completedLevels.indexOf(n) < 0) save.completedLevels.push(n);
+  unlockLevel(n + 1);
+}
+
+/* ============================================================
+   SECTION 3: GAME STATE VARIABLES
+   ============================================================ */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+let state = S.MENU;
+let frame = 0;            // global frame counter (for animations)
+
+// Active level data
+let curLevelIndex = 0;    // 0-based index into LEVELS
+let level = LEVELS[0];    // reference to current level
+
+// Per-level runtime
+let levelFrames = 0;
+let levelEnding = false;
+let timeScale = 1.0;
+let spawnTimer = 0;
+let coinTimer = 0;
+let score = 0;
+let levelCoinsEarned = 0;
+
+// Entity arrays
+let pirates = [];
+let cannonballs = [];
+let coins = [];
+let particles = [];
+
+// Player
+let player = null;
+let lives = 3;
+let invincible = 0;       // frames of invincibility remaining
+
+// Last-results for end screens
+let lastScore = 0;
+let lastCoins = 0;
+
+// Mouse position (for hover effects)
+let mouseX = 0, mouseY = 0;
+
+/* ============================================================
+   SECTION 4: AUDIO SYSTEM
+   ============================================================ */
+const Audio2 = (function(){
+  let actx = null;
+  let masterGain = null;
+  let musicGain = null;
+  let started = false;
+  let musicTimer = null;
+  let step = 0;
+
+  // Pentatonic-flavoured scale frequencies
+  const BASS = [110.00, 123.47, 146.83, 110.00, 98.00, 110.00, 146.83, 130.81];
+  const MELODY = [
+    440.00, 523.25, 587.33, 659.25,
+    587.33, 523.25, 440.00, 392.00,
+    440.00, 587.33, 659.25, 783.99,
+    659.25, 587.33, 523.25, 440.00
+  ];
+
+  function ensure(){
+    if(actx) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      actx = new AC();
+      masterGain = actx.createGain();
+      masterGain.gain.value = 0.5;
+      masterGain.connect(actx.destination);
+      musicGain = actx.createGain();
+      musicGain.gain.value = save.settings.music ? 0.35 : 0.0;
+      musicGain.connect(masterGain);
+    } catch(e){ actx = null; }
+  }
+
+  // Called on first user gesture
+  function init(){
+    ensure();
+    if(actx && actx.state === 'suspended'){ actx.resume(); }
+    started = true;
+  }
+
+  function playMusic(){
+    ensure();
+    if(!actx) return;
+    if(musicTimer) return;
+    step = 0;
+    const tick = function(){
+      if(!actx) return;
+      const now = actx.currentTime;
+      tone(BASS[step % BASS.length], 'triangle', now, 0.32, 0.18, musicGain);
+      if(step % 2 === 0){
+        tone(MELODY[step % MELODY.length], 'sine', now, 0.26, 0.10, musicGain);
+      }
+      if(step % 8 === 4){
+        tone(MELODY[(step+4) % MELODY.length]*2, 'sine', now, 0.18, 0.05, musicGain);
+      }
+      step++;
+    };
+    tick();
+    musicTimer = setInterval(tick, 340);
+  }
+  function stopMusic(){
+    if(musicTimer){ clearInterval(musicTimer); musicTimer = null; }
+  }
+
+  function tone(freq, type, when, dur, vol, dest){
+    if(!actx) return;
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(vol, when + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    o.connect(g);
+    g.connect(dest || masterGain);
+    o.start(when);
+    o.stop(when + dur + 0.05);
+  }
+
+  function sfx(name){
+    ensure();
+    if(!actx || !save.settings.sfx) return;
+    const now = actx.currentTime;
+    if(name === 'crash'){
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(220, now);
+      o.frequency.exponentialRampToValueAtTime(50, now + 0.4);
+      g.gain.setValueAtTime(0.4, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+      o.connect(g); g.connect(masterGain);
+      o.start(now); o.stop(now + 0.5);
+      tone(110, 'square', now, 0.25, 0.2, masterGain);
+    } else if(name === 'hit'){
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.type = 'square';
+      o.frequency.setValueAtTime(330, now);
+      o.frequency.exponentialRampToValueAtTime(80, now + 0.3);
+      g.gain.setValueAtTime(0.35, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
+      o.connect(g); g.connect(masterGain);
+      o.start(now); o.stop(now + 0.35);
+    } else if(name === 'coin'){
+      tone(880, 'sine', now, 0.08, 0.3, masterGain);
+      tone(1320, 'sine', now + 0.07, 0.09, 0.28, masterGain);
+    } else if(name === 'fanfare'){
+      const notes = [523.25, 659.25, 783.99, 1046.50];
+      notes.forEach((f,i)=> tone(f, 'triangle', now + i*0.13, 0.3, 0.3, masterGain));
+      tone(1046.5, 'sine', now + 0.55, 0.5, 0.25, masterGain);
+    } else if(name === 'click'){
+      tone(660, 'square', now, 0.05, 0.18, masterGain);
+    }
+  }
+
+  function setMusicEnabled(on){
+    ensure();
+    if(musicGain && actx){
+      const now = actx.currentTime;
+      musicGain.gain.cancelScheduledValues(now);
+      musicGain.gain.setValueAtTime(musicGain.gain.value, now);
+      musicGain.gain.linearRampToValueAtTime(on ? 0.35 : 0.0, now + 0.2);
+    } else if(musicGain){
+      musicGain.gain.value = on ? 0.35 : 0.0;
+    }
+    if(on){ playMusic(); }
+  }
+
+  return { init, playMusic, stopMusic, sfx, setMusicEnabled,
+           isStarted: ()=>started };
+})();
+
+/* ============================================================
+   SECTION 5: INPUT HANDLING
+   ============================================================ */
+const keys = {};
+let pointerDown = false;
+let pointerTarget = { x: CANVAS_W/2, y: CANVAS_H - 120 };
+let usePointerSteer = false;
+
+function canvasCoords(evt){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  let cx, cy;
+  if(evt.touches && evt.touches.length){
+    cx = evt.touches[0].clientX; cy = evt.touches[0].clientY;
+  } else {
+    cx = evt.clientX; cy = evt.clientY;
+  }
+  return { x: (cx - rect.left) * scaleX, y: (cy - rect.top) * scaleY };
+}
+
+document.addEventListener('keydown', function(e){
+  firstGesture();
+  keys[e.key] = true;
+  keys[e.code] = true;
+  if([' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].indexOf(e.key) >= 0){
+    e.preventDefault();
+  }
+  if(e.key === ' ' || e.code === 'Space'){
+    handleSpace();
+  }
+  usePointerSteer = false;
+});
+document.addEventListener('keyup', function(e){
+  keys[e.key] = false;
+  keys[e.code] = false;
+});
+
+canvas.addEventListener('mousemove', function(e){
+  const p = canvasCoords(e);
+  mouseX = p.x; mouseY = p.y;
+  if(pointerDown && state === S.PLAYING){
+    pointerTarget.x = p.x; pointerTarget.y = p.y;
+    usePointerSteer = true;
+  }
+});
+canvas.addEventListener('mousedown', function(e){
+  firstGesture();
+  const p = canvasCoords(e);
+  mouseX = p.x; mouseY = p.y;
+  pointerDown = true;
+  if(state === S.PLAYING){
+    pointerTarget.x = p.x; pointerTarget.y = p.y;
+    usePointerSteer = true;
+  }
+  handleClick(p.x, p.y);
+});
+canvas.addEventListener('mouseup', function(){ pointerDown = false; });
+canvas.addEventListener('mouseleave', function(){ pointerDown = false; });
+
+canvas.addEventListener('touchstart', function(e){
+  firstGesture();
+  e.preventDefault();
+  const p = canvasCoords(e);
+  pointerDown = true;
+  if(state === S.PLAYING){
+    pointerTarget.x = p.x; pointerTarget.y = p.y;
+    usePointerSteer = true;
+  }
+  handleClick(p.x, p.y);
+}, { passive:false });
+canvas.addEventListener('touchmove', function(e){
+  e.preventDefault();
+  const p = canvasCoords(e);
+  if(pointerDown && state === S.PLAYING){
+    pointerTarget.x = p.x; pointerTarget.y = p.y;
+    usePointerSteer = true;
+  }
+}, { passive:false });
+canvas.addEventListener('touchend', function(e){
+  e.preventDefault();
+  pointerDown = false;
+}, { passive:false });
+
+let gestureDone = false;
+function firstGesture(){
+  if(gestureDone) return;
+  gestureDone = true;
+  Audio2.init();
+  if(save.settings.music) Audio2.setMusicEnabled(true);
+}
+
+function handleSpace(){
+  if(state === S.TRANSITION){
+    startLevelPlay();
+  } else if(state === S.GAME_OVER){
+    beginLevel(curLevelIndex);
+  } else if(state === S.LEVEL_COMPLETE){
+    advanceFromComplete();
+  } else if(state === S.WIN){
+    gotoMenu();
+  } else if(state === S.MENU){
+    gotoLevelSelect();
+  }
+}
+
+/* ============================================================
+   SECTION 6: BUTTON SYSTEM (draw + click detection)
+   ============================================================ */
+let buttons = [];
+
+function resetButtons(){ buttons = []; }
+
+function addButton(x, y, w, h, label, onClick, opts){
+  opts = opts || {};
+  const b = {
+    x:x, y:y, w:w, h:h, label:label, onClick:onClick,
+    enabled: opts.enabled !== false,
+    fill: opts.fill || '#1f78c4',
+    fillDisabled: opts.fillDisabled || '#3a4654',
+    text: opts.text || '#ffffff',
+    font: opts.font || 'bold 20px "Trebuchet MS", sans-serif',
+    radius: opts.radius != null ? opts.radius : 10,
+    invisible: !!opts.invisible
+  };
+  buttons.push(b);
+  return b;
+}
+
+function drawSingleButton(b){
+  if(b.invisible) return;
+  const hover = mouseX>=b.x && mouseX<=b.x+b.w && mouseY>=b.y && mouseY<=b.y+b.h;
+  ctx.save();
+  roundRect(b.x, b.y, b.w, b.h, b.radius);
+  let fill = b.enabled ? b.fill : b.fillDisabled;
+  if(b.enabled && hover) fill = lighten(fill, 22);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.stroke();
+  ctx.fillStyle = b.enabled ? b.text : 'rgba(255,255,255,0.4)';
+  ctx.font = b.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.label, b.x+b.w/2, b.y+b.h/2+1);
+  ctx.restore();
+}
+
+function drawButtons(){
+  for(const b of buttons) drawSingleButton(b);
+}
+
+function buttonsClick(x, y){
+  // iterate in reverse so topmost buttons win
+  for(let i = buttons.length - 1; i >= 0; i--){
+    const b = buttons[i];
+    if(!b.enabled) continue;
+    if(x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h){
+      Audio2.sfx('click');
+      b.onClick();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Drawing helpers
+function roundRect(x, y, w, h, r){
+  if(r > Math.min(w,h)/2) r = Math.min(w,h)/2;
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+function lighten(hexOrRgb, amt){
+  if(hexOrRgb[0] !== '#') return hexOrRgb;
+  let h = hexOrRgb.slice(1);
+  if(h.length === 3) h = h.split('').map(c=>c+c).join('');
+  let r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+  r = Math.min(255, r+amt); g = Math.min(255, g+amt); b = Math.min(255, b+amt);
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+/* ============================================================
+   SECTION 7: PLAYER
+   ============================================================ */
+function makePlayer(){
+  return {
+    x: CANVAS_W/2,
+    y: PLAY_TOP + PLAY_H - 100,
+    w: 26, h: 42,
+    speed: 4.4,
+    bob: 0
+  };
+}
+
+function updatePlayer(){
+  const p = player;
+  let dx = 0, dy = 0;
+
+  if(usePointerSteer){
+    const tx = pointerTarget.x, ty = pointerTarget.y;
+    const ddx = tx - p.x, ddy = ty - p.y;
+    const dist = Math.hypot(ddx, ddy);
+    if(dist > 2){
+      const sp = Math.min(p.speed, dist);
+      dx = (ddx/dist) * sp;
+      dy = (ddy/dist) * sp;
+    }
+  } else {
+    if(keys['ArrowLeft'] || keys['a'] || keys['A']) dx -= p.speed;
+    if(keys['ArrowRight']|| keys['d'] || keys['D']) dx += p.speed;
+    if(keys['ArrowUp']   || keys['w'] || keys['W']) dy -= p.speed;
+    if(keys['ArrowDown'] || keys['s'] || keys['S']) dy += p.speed;
+  }
+
+  // wind drift (rightward)
+  if(level && level.wind){
+    p.x += level.wind * 1.0;
+  }
+
+  p.x += dx;
+  p.y += dy;
+  p.bob += 0.15;
+
+  const margin = p.w/2;
+  if(p.x < margin) p.x = margin;
+  if(p.x > CANVAS_W - margin) p.x = CANVAS_W - margin;
+  if(p.y < PLAY_TOP + p.h/2) p.y = PLAY_TOP + p.h/2;
+  if(p.y > PLAY_TOP + PLAY_H - p.h/2) p.y = PLAY_TOP + PLAY_H - p.h/2;
+}
+
+function drawBoat(x, y, scale, hull, sail, mastColor, flip, bob){
+  ctx.save();
+  ctx.translate(x, y + (bob ? Math.sin(bob)*2 : 0));
+  ctx.scale(scale, scale * (flip ? -1 : 1));
+
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(0, 20, 17, 7, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // hull (pointed bow up)
+  ctx.fillStyle = hull;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);
+  ctx.quadraticCurveTo(14, -4, 12, 14);
+  ctx.lineTo(-12, 14);
+  ctx.quadraticCurveTo(-14, -4, 0, -22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(-11, 10, 22, 4);
+
+  // mast
+  ctx.strokeStyle = mastColor || '#5a3a18';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, 12);
+  ctx.lineTo(0, -16);
+  ctx.stroke();
+
+  // sail
+  ctx.fillStyle = sail;
+  ctx.beginPath();
+  ctx.moveTo(1, -14);
+  ctx.quadraticCurveTo(13, -2, 1, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawPlayer(){
+  const skin = SKINS.find(s=>s.id === save.selectedSkin) || SKINS[0];
+  let alpha = 1;
+  if(invincible > 0 && Math.floor(frame/4) % 2 === 0) alpha = 0.4;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  drawBoat(player.x, player.y, 1.0, skin.hull, skin.sail, '#5a3a18', false, player.bob);
+  ctx.restore();
+}
+
+/* ============================================================
+   SECTION 8: PIRATES (spawn, update, draw)
+   ============================================================ */
+function spawnPirates(n){
+  for(let i=0;i<n;i++){
+    const pat = level.patterns[(Math.random()*level.patterns.length)|0];
+    const x = 30 + Math.random()*(CANVAS_W - 60);
+    const baseSpeed = level.pirateSpeed;
+    const p = {
+      x: x,
+      baseX: x,
+      y: PLAY_TOP - 30 - Math.random()*40,
+      w: 28, h: 44,
+      pattern: pat,
+      vy: baseSpeed,
+      vx: 0,
+      zigDir: Math.random() < 0.5 ? -1 : 1,
+      zigPeriod: 50 + (Math.random()*30|0),
+      zigTimer: 0,
+      spiralPhase: Math.random()*Math.PI*2,
+      spiralAmp: 50 + Math.random()*40,
+      fireTimer: (Math.random()*30)|0,
+      bob: Math.random()*Math.PI*2,
+      visible: true,
+      ghostTimer: (Math.random()*90)|0
+    };
+    if(pat === 'diagonal'){
+      const ang = (Math.random()<0.5? -1:1) * (0.4 + Math.random()*0.4);
+      p.vx = Math.sin(ang) * baseSpeed;
+    }
+    // clamp spiral base so it stays on screen
+    p.baseX = Math.max(p.spiralAmp + 16, Math.min(CANVAS_W - p.spiralAmp - 16, p.baseX));
+    pirates.push(p);
+  }
+}
+
+function updatePirates(){
+  const sp = level.pirateSpeed * timeScale;
+  for(let i = pirates.length - 1; i >= 0; i--){
+    const p = pirates[i];
+    p.bob += 0.12;
+
+    switch(p.pattern){
       case 'straight':
-        p.vy = p.speed;
-        p.vx *= 0.95;
+        p.y += sp;
         break;
-      case 'diagonal':
-        // constant diagonal, bounces off walls
-        if (p.x <= p.w / 2 || p.x >= W - p.w / 2) p.vx *= -1;
+      case 'diagonal': {
+        const dirSign = p.vx >= 0 ? 1 : -1;
+        const mag = Math.abs(p.vx) * timeScale;
+        p.x += dirSign * mag;
+        p.y += sp;
+        if(p.x < p.w/2){ p.x = p.w/2; p.vx = Math.abs(p.vx); }
+        if(p.x > CANVAS_W - p.w/2){ p.x = CANVAS_W - p.w/2; p.vx = -Math.abs(p.vx); }
         break;
+      }
       case 'zigzag':
         p.zigTimer++;
-        if (p.zigTimer >= p.zigPeriod) {
-          p.zigTimer = 0;
-          p.zigDir *= -1;
+        if(p.zigTimer >= p.zigPeriod){ p.zigDir *= -1; p.zigTimer = 0; }
+        p.x += p.zigDir * 1.8 * timeScale;
+        p.y += sp;
+        if(p.x < p.w/2){ p.x = p.w/2; p.zigDir = 1; }
+        if(p.x > CANVAS_W - p.w/2){ p.x = CANVAS_W - p.w/2; p.zigDir = -1; }
+        break;
+      case 'homing': {
+        if(player){
+          const diff = player.x - p.x;
+          p.x += Math.sign(diff) * Math.min(Math.abs(diff), 1.3 * timeScale);
         }
-        p.vx = p.zigDir * p.speed * 0.7;
-        p.vy = p.speed * 0.8;
+        p.y += sp * 0.95;
         break;
-      case 'homing':
-        const dx = player.x - p.x;
-        p.vx += Math.sign(dx) * 0.08;
-        p.vx = Math.max(-p.speed * 0.8, Math.min(p.speed * 0.8, p.vx));
-        p.vy = p.speed * 0.9;
+      }
+      case 'spiral':
+        p.spiralPhase += 0.06 * timeScale;
+        p.x = p.baseX + Math.sin(p.spiralPhase) * p.spiralAmp;
+        p.y += sp * 0.9;
+        if(p.x < p.w/2) p.x = p.w/2;
+        if(p.x > CANVAS_W - p.w/2) p.x = CANVAS_W - p.w/2;
         break;
     }
 
-    p.x += p.vx;
-    p.y += p.vy;
-
-    // Bounce walls for diagonal
-    if (p.pattern === 'diagonal') {
-      if (p.x < p.w / 2) { p.x = p.w / 2; p.vx = Math.abs(p.vx); }
-      if (p.x > W - p.w / 2) { p.x = W - p.w / 2; p.vx = -Math.abs(p.vx); }
+    // ghost visibility toggling
+    if(level.ghost){
+      p.ghostTimer++;
+      if(p.ghostTimer >= 90){ p.ghostTimer = 0; p.visible = !p.visible; }
+    } else {
+      p.visible = true;
     }
 
-    // Remove if off screen
-    if (p.y > H + 50) {
-      pirates.splice(i, 1);
-      score += 10; // dodged a pirate
-      continue;
+    // firing
+    if(level.fireRate > 0){
+      p.fireTimer++;
+      const effRate = Math.max(24, level.fireRate / timeScale);
+      if(p.fireTimer >= effRate && p.y > PLAY_TOP && p.y < PLAY_TOP + PLAY_H - 40){
+        p.fireTimer = 0;
+        fireCannon(p);
+      }
     }
 
-    // Collision with player
-    if (!player.invincible && checkCollision(player, p)) {
-      handleCollision(p);
-      pirates.splice(i, 1);
+    // collision with player (collide even when ghost-invisible to keep it fair-ish:
+    // only collide when visible so invisible pirates can't sneak-kill)
+    if(player && invincible <= 0 && state === S.PLAYING && p.visible){
+      if(rectOverlap(p.x - p.w*0.35, p.y - p.h*0.35, p.w*0.7, p.h*0.7,
+                     player.x - player.w*0.35, player.y - player.h*0.35, player.w*0.7, player.h*0.7)){
+        hitPlayer(false);
+        spawnDebris(p.x, p.y, '#3a3a3a');
+        pirates.splice(i,1);
+        continue;
+      }
+    }
+
+    if(p.y - p.h > PLAY_TOP + PLAY_H){
+      pirates.splice(i,1);
+      score += 5;
     }
   }
 }
 
-function checkCollision(a, b) {
-  return Math.abs(a.x - b.x) < (a.w / 2 + b.w / 2) - 4
-    && Math.abs(a.y - b.y) < (a.h / 2 + b.h / 2) - 4;
+function drawSkull(x, y, r){
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = '#f0f0f0';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillRect(-r*0.5, r*0.5, r, r*0.4);
+  ctx.fillStyle = '#101010';
+  ctx.beginPath();
+  ctx.arc(-r*0.4, -r*0.15, r*0.28, 0, Math.PI*2);
+  ctx.arc( r*0.4, -r*0.15, r*0.28, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, r*0.05);
+  ctx.lineTo(-r*0.15, r*0.4);
+  ctx.lineTo(r*0.15, r*0.4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#f0f0f0';
+  ctx.lineWidth = Math.max(2, r*0.22);
+  ctx.beginPath();
+  ctx.moveTo(-r*1.2, r*1.2); ctx.lineTo(r*1.2, r*1.9);
+  ctx.moveTo(r*1.2, r*1.2);  ctx.lineTo(-r*1.2, r*1.9);
+  ctx.stroke();
+  ctx.restore();
 }
 
-function handleCollision(pirate) {
-  spawnExplosion(player.x, player.y);
-  playCollisionSound();
-  lives--;
-  player.invincible = true;
-  player.invincibleTimer = 150;
-  state = STATES.COLLISION;
-  collisionTimer = 90;
-
-  if (lives <= 0) {
-    setTimeout(() => {
-      state = STATES.GAME_OVER;
-      if (score > highScore) highScore = score;
-    }, 1200);
+function drawPirate(p){
+  let alpha = 1;
+  if(level.ghost && !p.visible){
+    const untilFlip = 90 - p.ghostTimer;
+    if(untilFlip <= 30){
+      alpha = (Math.floor(frame/4)%2===0) ? 0.25 : 0.05;
+    } else {
+      alpha = 0.0;
+    }
   }
+  if(alpha <= 0.001) return;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(p.x, p.y + Math.sin(p.bob)*2);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(0, 20, 18, 7, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // hull pointing down toward player
+  ctx.fillStyle = '#2b2b30';
+  ctx.beginPath();
+  ctx.moveTo(0, 22);
+  ctx.quadraticCurveTo(15, 4, 13, -14);
+  ctx.lineTo(-13, -14);
+  ctx.quadraticCurveTo(-15, 4, 0, 22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.stroke();
+  ctx.fillStyle = '#1c1c20';
+  ctx.fillRect(-12, -12, 24, 4);
+
+  ctx.strokeStyle = '#3a2a18';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, -12);
+  ctx.lineTo(0, 12);
+  ctx.stroke();
+
+  // black sail
+  ctx.fillStyle = 'rgba(20,20,24,0.95)';
+  ctx.beginPath();
+  ctx.moveTo(-1, 10);
+  ctx.quadraticCurveTo(-13, 0, -1, -10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(30,30,38,0.95)';
+  ctx.beginPath();
+  ctx.moveTo(1, 10);
+  ctx.quadraticCurveTo(13, 0, 1, -10);
+  ctx.closePath();
+  ctx.fill();
+
+  drawSkull(0, -1, 4.5);
+
+  ctx.restore();
 }
 
-// ============================================================
-// PARTICLES
-// ============================================================
-function spawnExplosion(x, y) {
-  for (let i = 0; i < 30; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 4 + 1;
-    particles.push({
-      x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      life: 60,
-      maxLife: 60,
-      r: Math.random() * 5 + 2,
-      color: `hsl(${Math.random() * 40 + 20}, 100%, ${50 + Math.random() * 30}%)`,
-      type: 'explosion',
+/* ============================================================
+   SECTION 9: PROJECTILES (cannonballs)
+   ============================================================ */
+function fireCannon(p){
+  if(!player) return;
+  const baseAngle = Math.atan2(player.y - p.y, player.x - p.x);
+  const n = level.shots;
+  const spread = level.spread;
+  const speed = level.fireSpeed * (0.85 + 0.3*timeScale/level.maxTimeScale);
+  for(let i=0;i<n;i++){
+    let a = baseAngle;
+    if(n > 1){
+      a = baseAngle - spread/2 + (spread * i/(n-1));
+    }
+    cannonballs.push({
+      x: p.x,
+      y: p.y + 12,
+      vx: Math.cos(a)*speed,
+      vy: Math.sin(a)*speed,
+      r: level.ice ? 9 : 5,
+      ice: level.ice,
+      trail: []
     });
   }
-  // Foam particles
-  for (let i = 0; i < 20; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 2 + 0.5;
-    particles.push({
-      x: x + (Math.random() - 0.5) * 30,
-      y: y + (Math.random() - 0.5) * 30,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - 1,
-      life: 80,
-      maxLife: 80,
-      r: Math.random() * 6 + 3,
-      color: 'rgba(255,255,255,',
-      type: 'foam',
-    });
+}
+
+function updateCannonballs(){
+  for(let i = cannonballs.length - 1; i >= 0; i--){
+    const c = cannonballs[i];
+    c.trail.push({ x:c.x, y:c.y });
+    if(c.trail.length > 6) c.trail.shift();
+    c.x += c.vx;
+    c.y += c.vy;
+
+    if(player && invincible <= 0 && state === S.PLAYING){
+      const hitR = (c.ice ? c.r + 4 : c.r) + 10;
+      const dx = c.x - player.x, dy = c.y - player.y;
+      if(dx*dx + dy*dy < hitR*hitR){
+        hitPlayer(true);
+        spawnDebris(c.x, c.y, c.ice ? '#bfe6ff' : '#202020');
+        cannonballs.splice(i,1);
+        continue;
+      }
+    }
+
+    if(c.x < -20 || c.x > CANVAS_W + 20 || c.y < PLAY_TOP - 30 || c.y > CANVAS_H + 20){
+      cannonballs.splice(i,1);
+    }
   }
 }
 
-function updateParticles() {
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vx *= 0.92;
-    p.vy *= 0.92;
-    p.life--;
-    if (p.life <= 0) particles.splice(i, 1);
-  }
-  for (let i = wakeParticles.length - 1; i >= 0; i--) {
-    const p = wakeParticles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.life--;
-    if (p.life <= 0) wakeParticles.splice(i, 1);
-  }
-}
-
-// ============================================================
-// AUDIO (Web Audio API)
-// ============================================================
-let audioCtx = null;
-let sailingOscillator = null;
-let sailingGain = null;
-
-function initAudio() {
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    startSailingHum();
-  } catch (e) {}
-}
-
-function startSailingHum() {
-  if (!audioCtx) return;
-  sailingGain = audioCtx.createGain();
-  sailingGain.gain.setValueAtTime(0.03, audioCtx.currentTime);
-  sailingGain.connect(audioCtx.destination);
-
-  sailingOscillator = audioCtx.createOscillator();
-  sailingOscillator.type = 'sine';
-  sailingOscillator.frequency.setValueAtTime(80, audioCtx.currentTime);
-  sailingOscillator.connect(sailingGain);
-  sailingOscillator.start();
-}
-
-function stopSailingHum() {
-  if (sailingOscillator) {
-    sailingOscillator.stop();
-    sailingOscillator = null;
+function drawCannonballs(){
+  for(const c of cannonballs){
+    for(let t=0;t<c.trail.length;t++){
+      const tp = c.trail[t];
+      const a = (t+1)/c.trail.length * 0.4;
+      ctx.fillStyle = c.ice ? 'rgba(180,220,255,'+a+')' : 'rgba(120,120,120,'+a+')';
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, c.r*0.7*(t+1)/c.trail.length + 1, 0, Math.PI*2);
+      ctx.fill();
+    }
+    const grad = ctx.createRadialGradient(c.x-c.r*0.3, c.y-c.r*0.3, 1, c.x, c.y, c.r);
+    if(c.ice){
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(1, '#5aa8e0');
+    } else {
+      grad.addColorStop(0, '#555');
+      grad.addColorStop(1, '#0a0a0a');
+    }
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, c.r, 0, Math.PI*2);
+    ctx.fill();
   }
 }
 
-function playCollisionSound() {
-  if (!audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(220, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(55, audioCtx.currentTime + 0.4);
-  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.5);
-}
-
-function playLevelCompleteSound() {
-  if (!audioCtx) return;
-  const notes = [523, 659, 784, 1047];
-  notes.forEach((freq, i) => {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + i * 0.15);
-    gain.gain.setValueAtTime(0.2, audioCtx.currentTime + i * 0.15);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + i * 0.15 + 0.3);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime + i * 0.15);
-    osc.stop(audioCtx.currentTime + i * 0.15 + 0.4);
+/* ============================================================
+   SECTION 10: COINS
+   ============================================================ */
+function spawnCoin(){
+  const r = Math.random();
+  let type;
+  if(r < 0.60) type = 'bronze';
+  else if(r < 0.88) type = 'silver';
+  else type = 'gold';
+  const t = COIN_TYPES[type];
+  coins.push({
+    x: 20 + Math.random()*(CANVAS_W - 40),
+    y: PLAY_TOP + 20,
+    type: type,
+    r: t.r,
+    value: t.value,
+    spin: Math.random()*Math.PI*2,
+    vy: 0.6 + Math.random()*0.4
   });
 }
 
-// ============================================================
-// LEVEL MANAGEMENT
-// ============================================================
-function startGame() {
-  if (!audioCtx) initAudio();
-  currentLevel = 0;
-  lives = 3;
-  score = 0;
-  frameCount = 0;
-  levelFrames = 0;
-  pirates = [];
-  particles = [];
-  wakeParticles = [];
-  player.x = W / 2;
-  player.vx = 0;
-  player.invincible = false;
-  spawnTimer = 60;
-  state = STATES.LEVEL_TRANSITION;
-  transitionTimer = 180;
-}
-
-function resetGame() {
-  state = STATES.TITLE;
-  pirates = [];
-  particles = [];
-  wakeParticles = [];
-}
-
-function advanceLevel() {
-  playLevelCompleteSound();
-  currentLevel++;
-  if (currentLevel >= LEVELS.length) {
-    state = STATES.WIN;
-    if (score > highScore) highScore = score;
-    return;
-  }
-  pirates = [];
-  levelFrames = 0;
-  spawnTimer = 60;
-  state = STATES.LEVEL_TRANSITION;
-  transitionTimer = 240;
-}
-
-// ============================================================
-// RENDERING
-// ============================================================
-
-// Ocean background
-function drawOcean() {
-  oceanOffset = (oceanOffset + 1.2) % 80;
-
-  // Base ocean color
-  const grad = ctx.createLinearGradient(0, HUD_H, 0, H);
-  grad.addColorStop(0, '#0a3d6b');
-  grad.addColorStop(1, '#051d35');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, HUD_H, W, PLAY_H);
-
-  // Wave bands
-  for (let row = 0; row < 20; row++) {
-    const y = HUD_H + ((row * 40 + oceanOffset) % (PLAY_H + 40)) - 20;
-    const alpha = 0.06 + Math.sin(row * 0.7 + frameCount * 0.02) * 0.03;
-    ctx.fillStyle = `rgba(100,180,255,${alpha})`;
-    ctx.beginPath();
-    for (let x = 0; x <= W; x += 4) {
-      const wave = Math.sin(x * 0.04 + row * 1.3 + frameCount * 0.03) * 4;
-      if (x === 0) ctx.moveTo(x, y + wave);
-      else ctx.lineTo(x, y + wave);
+function updateCoins(){
+  for(let i = coins.length - 1; i >= 0; i--){
+    const c = coins[i];
+    c.y += c.vy;
+    c.spin += 0.08;
+    if(player){
+      const dx = c.x - player.x, dy = c.y - player.y;
+      const cr = c.r + 16;
+      if(dx*dx + dy*dy < cr*cr){
+        save.coins += c.value;
+        levelCoinsEarned += c.value;
+        score += c.value * 5;
+        Audio2.sfx('coin');
+        spawnSparkle(c.x, c.y, COIN_TYPES[c.type].shine);
+        coins.splice(i,1);
+        continue;
+      }
     }
-    ctx.lineTo(W, y + 12);
-    ctx.lineTo(0, y + 12);
+    if(c.y - c.r > PLAY_TOP + PLAY_H){ coins.splice(i,1); }
+  }
+}
+
+function drawCoin(c){
+  const t = COIN_TYPES[c.type];
+  const sx = Math.abs(Math.cos(c.spin));
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.scale(0.4 + 0.6*sx, 1);
+  const grad = ctx.createRadialGradient(-c.r*0.3, -c.r*0.3, 1, 0, 0, c.r);
+  grad.addColorStop(0, t.shine);
+  grad.addColorStop(1, t.color);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, c.r, 0, Math.PI*2);
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.stroke();
+  ctx.restore();
+  if(Math.floor(c.spin*2)%4===0){
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(c.x - c.r*0.3, c.y - c.r*0.3, 1.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   SECTION 11: PARTICLES
+   ============================================================ */
+function spawnDebris(x, y, color){
+  for(let i=0;i<14;i++){
+    const a = Math.random()*Math.PI*2;
+    const sp = 1 + Math.random()*4;
+    particles.push({
+      x:x, y:y,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - 1,
+      life: 30 + Math.random()*20, maxLife: 50,
+      r: 2 + Math.random()*3,
+      color: color || '#888',
+      grav: 0.12
+    });
+  }
+}
+function spawnSparkle(x, y, color){
+  for(let i=0;i<8;i++){
+    const a = Math.random()*Math.PI*2;
+    const sp = 0.5 + Math.random()*2.5;
+    particles.push({
+      x:x, y:y,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp,
+      life: 20 + Math.random()*15, maxLife: 35,
+      r: 1.5 + Math.random()*2,
+      color: color || '#fff',
+      grav: 0.02
+    });
+  }
+}
+function updateParticles(){
+  for(let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += p.grav;
+    p.life--;
+    if(p.life <= 0) particles.splice(i,1);
+  }
+}
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha = Math.max(0, p.life/p.maxLife);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ============================================================
+   SECTION 12: LEVEL MANAGEMENT
+   ============================================================ */
+function beginLevel(index){
+  curLevelIndex = index;
+  level = LEVELS[index];
+  levelFrames = 0;
+  levelEnding = false;
+  timeScale = 1.0;
+  spawnTimer = 0;
+  coinTimer = 0;
+  score = 0;
+  levelCoinsEarned = 0;
+  pirates = [];
+  cannonballs = [];
+  coins = [];
+  particles = [];
+  player = makePlayer();
+  lives = 3;
+  invincible = 90; // grace at start
+  usePointerSteer = false;
+  pointerTarget.x = player.x;
+  pointerTarget.y = player.y;
+  state = S.TRANSITION;
+}
+
+function startLevelPlay(){
+  state = S.PLAYING;
+}
+
+function updateLevelProgress(){
+  levelFrames++;
+  const prog = Math.min(1, levelFrames / level.duration);
+  timeScale = 1.0 + (level.maxTimeScale - 1.0) * prog;
+
+  if(!levelEnding && levelFrames >= level.duration){
+    levelEnding = true;
+  }
+
+  if(!levelEnding){
+    spawnTimer++;
+    const effInterval = Math.max(18, level.spawnInterval / timeScale);
+    if(spawnTimer >= effInterval){
+      spawnTimer = 0;
+      const cnt = Math.max(level.spawnCount,
+                           Math.round(level.spawnCount * (0.6 + 0.7*(timeScale-1))));
+      spawnPirates(cnt);
+    }
+    coinTimer++;
+    if(coinTimer >= level.coinRate){
+      coinTimer = 0;
+      spawnCoin();
+    }
+  }
+
+  if(!levelEnding) score += 1;
+
+  if(levelEnding && pirates.length === 0 && cannonballs.length === 0){
+    finishLevel();
+  }
+}
+
+function finishLevel(){
+  lastScore = score;
+  lastCoins = levelCoinsEarned;
+  completeLevel(curLevelIndex + 1);
+  persist();
+  Audio2.sfx('fanfare');
+  if(curLevelIndex + 1 >= LEVELS.length){
+    state = S.WIN;
+  } else {
+    state = S.LEVEL_COMPLETE;
+  }
+}
+
+function advanceFromComplete(){
+  const next = curLevelIndex + 1;
+  if(next < LEVELS.length){
+    beginLevel(next);
+  } else {
+    state = S.WIN;
+  }
+}
+
+function hitPlayer(byProjectile){
+  if(invincible > 0) return;
+  lives--;
+  Audio2.sfx(byProjectile ? 'hit' : 'crash');
+  spawnDebris(player.x, player.y, '#cc4422');
+  invincible = 100;
+  if(lives <= 0){
+    lastScore = score;
+    lastCoins = levelCoinsEarned;
+    persist();
+    state = S.GAME_OVER;
+  }
+}
+
+/* ============================================================
+   SECTION 13: OCEAN RENDERER
+   ============================================================ */
+let menuOceanFrame = 0;
+
+function drawOcean(oc1, oc2, wc, topY, height, t){
+  const grad = ctx.createLinearGradient(0, topY, 0, topY + height);
+  grad.addColorStop(0, oc1);
+  grad.addColorStop(1, oc2);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, topY, CANVAS_W, height);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, topY, CANVAS_W, height);
+  ctx.clip();
+
+  const bands = 9;
+  for(let b=0;b<bands;b++){
+    const yBase = topY + ((b/bands)*height + (t*0.6) % (height/bands));
+    ctx.fillStyle = wc;
+    ctx.beginPath();
+    ctx.moveTo(-10, yBase);
+    const amp = 6 + b*0.6;
+    for(let x=-10;x<=CANVAS_W+10;x+=24){
+      const yy = yBase + Math.sin((x*0.03) + t*0.05 + b)*amp;
+      ctx.lineTo(x, yy);
+    }
+    ctx.lineTo(CANVAS_W+10, yBase + 18);
+    ctx.lineTo(-10, yBase + 18);
     ctx.closePath();
     ctx.fill();
   }
 
-  // Foam streaks
-  for (let i = 0; i < 6; i++) {
-    const sx = (i * 97 + frameCount * 0.5) % W;
-    const sy = HUD_H + ((i * 113 + oceanOffset * 2) % PLAY_H);
-    ctx.strokeStyle = 'rgba(200,230,255,0.15)';
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  for(let i=0;i<14;i++){
+    const gx = (i*73 + (t*0.8)) % CANVAS_W;
+    const gy = topY + ((i*113 + t*1.2) % height);
+    ctx.fillRect(gx, gy, 10, 2);
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   SECTION 14: HUD RENDERER
+   ============================================================ */
+function drawHeart(x, y, size, filled){
+  ctx.save();
+  ctx.translate(x, y);
+  const s = size;
+  ctx.beginPath();
+  ctx.moveTo(0, s*0.3);
+  ctx.bezierCurveTo(-s*0.5, -s*0.3, -s, s*0.25, 0, s);
+  ctx.moveTo(0, s*0.3);
+  ctx.bezierCurveTo(s*0.5, -s*0.3, s, s*0.25, 0, s);
+  ctx.closePath();
+  if(filled){
+    ctx.fillStyle = '#e74c3c';
+    ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
     ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx + 30, sy + 8);
     ctx.stroke();
   }
+  ctx.restore();
 }
 
-// HUD
-function drawHUD() {
-  ctx.fillStyle = '#0b2240';
-  ctx.fillRect(0, 0, W, HUD_H);
-  ctx.strokeStyle = '#1a4a80';
-  ctx.lineWidth = 2;
+function drawCoinIcon(x, y, r){
+  const grad = ctx.createRadialGradient(x-r*0.3, y-r*0.3, 1, x, y, r);
+  grad.addColorStop(0, '#fff7c0');
+  grad.addColorStop(1, '#ffd700');
+  ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(0, HUD_H);
-  ctx.lineTo(W, HUD_H);
+  ctx.arc(x, y, r, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,90,0,0.5)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
+  ctx.fillStyle = 'rgba(120,90,0,0.6)';
+  ctx.font = 'bold '+(r*1.1)+'px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$', x, y+1);
+}
 
-  // Level name
-  ctx.fillStyle = '#7ecfff';
-  ctx.font = 'bold 13px monospace';
+function drawHUD(){
+  ctx.fillStyle = 'rgba(8,16,26,0.92)';
+  ctx.fillRect(0, 0, CANVAS_W, HUD_H);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(0, HUD_H-2, CANVAS_W, 2);
+
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = 'bold 16px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(LEVELS[currentLevel] ? LEVELS[currentLevel].name : 'Victory!', 10, 18);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('Lvl '+(curLevelIndex+1)+': '+level.name, 10, 20);
 
-  // Score
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 14px monospace';
+  for(let i=0;i<3;i++){
+    drawHeart(CANVAS_W/2 - 26 + i*26, 6, 11, i < lives);
+  }
+
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = 'bold 16px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'right';
-  ctx.fillText(`Score: ${score}`, W - 10, 18);
+  ctx.fillText('Score '+score, CANVAS_W - 10, 20);
 
-  // Hearts (lives)
-  for (let i = 0; i < 3; i++) {
-    drawHeart(10 + i * 26, 30, i < lives);
+  // second row
+  drawCoinIcon(16, 44, 8);
+  ctx.fillStyle = '#ffe680';
+  ctx.font = 'bold 14px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(save.coins), 30, 45);
+
+  const pbX = 96, pbY = 39, pbW = CANVAS_W - 96 - 96, pbH = 11;
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  roundRect(pbX, pbY, pbW, pbH, 5); ctx.fill();
+  const prog = Math.min(1, levelFrames / level.duration);
+  ctx.fillStyle = levelEnding ? '#2ecc71' : '#39b0e6';
+  if(prog > 0){
+    roundRect(pbX, pbY, Math.max(pbH, pbW*prog), pbH, 5); ctx.fill();
   }
-
-  // Progress bar
-  const lvl = LEVELS[currentLevel];
-  if (lvl) {
-    const progress = Math.min(1, levelFrames / lvl.duration);
-    ctx.fillStyle = '#1a3a5a';
-    ctx.fillRect(W / 2 - 80, 34, 160, 12);
-    ctx.fillStyle = progress > 0.7 ? '#ff6b35' : '#2ecc71';
-    ctx.fillRect(W / 2 - 80, 34, 160 * progress, 12);
-    ctx.strokeStyle = '#2a5a8a';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(W / 2 - 80, 34, 160, 12);
-    ctx.fillStyle = '#aaa';
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('PROGRESS', W / 2, 43);
-  }
-}
-
-function drawHeart(x, y, filled) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(0.7, 0.7);
-  ctx.beginPath();
-  ctx.moveTo(0, -6);
-  ctx.bezierCurveTo(-10, -16, -20, -6, 0, 8);
-  ctx.bezierCurveTo(20, -6, 10, -16, 0, -6);
-  ctx.fillStyle = filled ? '#e74c3c' : '#333';
-  ctx.fill();
-  ctx.restore();
-}
-
-// Player boat
-function drawPlayer() {
-  if (player.invincible && Math.floor(frameCount / 5) % 2 === 0) return;
-
-  ctx.save();
-  ctx.translate(player.x, player.y);
-
-  // Hull
-  ctx.beginPath();
-  ctx.moveTo(0, -player.h / 2);
-  ctx.lineTo(player.w / 2, player.h / 4);
-  ctx.lineTo(player.w / 3, player.h / 2);
-  ctx.lineTo(-player.w / 3, player.h / 2);
-  ctx.lineTo(-player.w / 2, player.h / 4);
-  ctx.closePath();
-  ctx.fillStyle = '#2a5ca8';
-  ctx.fill();
-  ctx.strokeStyle = '#1a3c78';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  // Mast
-  ctx.strokeStyle = '#8b5e3c';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(0, player.h / 4);
-  ctx.lineTo(0, -player.h / 2 - 10);
-  ctx.stroke();
-
-  // Sail
-  ctx.beginPath();
-  ctx.moveTo(0, -player.h / 2 - 8);
-  ctx.lineTo(player.w / 2 + 4, -player.h / 6);
-  ctx.lineTo(0, player.h / 6);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(240,240,255,0.92)';
-  ctx.fill();
-  ctx.strokeStyle = '#aaa';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Sail shading
-  ctx.beginPath();
-  ctx.moveTo(0, -player.h / 2 - 8);
-  ctx.lineTo(player.w / 4, -player.h / 6);
-  ctx.lineTo(0, player.h / 6);
-  ctx.fillStyle = 'rgba(180,190,220,0.3)';
-  ctx.fill();
-
-  ctx.restore();
-}
-
-// Pirate ship
-function drawPirate(p) {
-  ctx.save();
-  ctx.translate(p.x, p.y);
-
-  // Hull
-  ctx.beginPath();
-  ctx.moveTo(0, -p.h / 2);
-  ctx.lineTo(p.w / 2, p.h / 4);
-  ctx.lineTo(p.w / 2 - 4, p.h / 2);
-  ctx.lineTo(-p.w / 2 + 4, p.h / 2);
-  ctx.lineTo(-p.w / 2, p.h / 4);
-  ctx.closePath();
-  ctx.fillStyle = p.color;
-  ctx.fill();
-  ctx.strokeStyle = '#111';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  // Mast
-  ctx.strokeStyle = '#5a3a1a';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, p.h / 4);
-  ctx.lineTo(0, -p.h / 2 - 8);
-  ctx.stroke();
-
-  // Black sail
-  ctx.beginPath();
-  ctx.moveTo(0, -p.h / 2 - 6);
-  ctx.lineTo(-p.w / 2 - 2, -p.h / 6);
-  ctx.lineTo(0, p.h / 6);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(20,20,20,0.9)';
-  ctx.fill();
-
-  // Skull icon on sail
-  const sk = { x: -p.w / 6, y: -p.h / 6 };
-  ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  ctx.beginPath();
-  ctx.arc(sk.x, sk.y, 5, 0, Math.PI * 2);
-  ctx.fill();
-  // Eyes
-  ctx.fillStyle = 'rgba(20,20,20,0.9)';
-  ctx.beginPath();
-  ctx.arc(sk.x - 2, sk.y - 1, 1.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(sk.x + 2, sk.y - 1, 1.2, 0, Math.PI * 2);
-  ctx.fill();
-  // Crossed bones
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(sk.x - 4, sk.y + 5);
-  ctx.lineTo(sk.x + 4, sk.y + 9);
-  ctx.moveTo(sk.x + 4, sk.y + 5);
-  ctx.lineTo(sk.x - 4, sk.y + 9);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-// Wake / trail
-function drawWake() {
-  for (const p of wakeParticles) {
-    const alpha = (p.life / p.maxLife) * 0.5;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(180,220,255,${alpha})`;
-    ctx.fill();
-  }
-}
-
-// Explosion / foam particles
-function drawParticles() {
-  for (const p of particles) {
-    const alpha = p.life / p.maxLife;
-    if (p.type === 'foam') {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${alpha * 0.8})`;
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = p.color;
-      ctx.globalAlpha = alpha;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-  }
-}
-
-// Title screen
-function drawTitle() {
-  ctx.fillStyle = '#051d35';
-  ctx.fillRect(0, 0, W, H);
-
-  // Animated ocean
-  drawOcean();
-
-  ctx.fillStyle = 'rgba(5,29,53,0.7)';
-  ctx.fillRect(0, 0, W, H);
-
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '10px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 42px monospace';
-  ctx.fillText('SAILING', W / 2, H / 2 - 100);
-  ctx.fillStyle = '#7ecfff';
-  ctx.font = 'bold 36px monospace';
-  ctx.fillText('ADVENTURE', W / 2, H / 2 - 55);
+  ctx.fillText(Math.floor(prog*100)+'%', pbX + pbW/2, pbY + pbH/2 + 1);
 
-  ctx.fillStyle = '#aaa';
-  ctx.font = '14px monospace';
-  ctx.fillText('Navigate the seas, avoid pirate ships!', W / 2, H / 2 + 10);
-
-  ctx.fillStyle = '#eee';
-  ctx.font = '13px monospace';
-  ctx.fillText('← → or A D to steer', W / 2, H / 2 + 50);
-
-  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#ffd700' : '#ff6b35';
-  ctx.font = 'bold 16px monospace';
-  ctx.fillText('PRESS SPACE TO SAIL', W / 2, H / 2 + 100);
-
-  if (highScore > 0) {
-    ctx.fillStyle = '#7ecfff';
-    ctx.font = '13px monospace';
-    ctx.fillText(`Best: ${highScore}`, W / 2, H / 2 + 135);
-  }
-
-  // Draw decorative player boat
-  const bx = W / 2, by = H / 2 - 170;
-  ctx.save();
-  ctx.translate(bx, by);
-  ctx.beginPath();
-  ctx.moveTo(0, -18);
-  ctx.lineTo(14, 8);
-  ctx.lineTo(11, 18);
-  ctx.lineTo(-11, 18);
-  ctx.lineTo(-14, 8);
-  ctx.closePath();
-  ctx.fillStyle = '#2a5ca8';
-  ctx.fill();
-  ctx.strokeStyle = '#1a3c78';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  ctx.strokeStyle = '#8b5e3c';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, 8);
-  ctx.lineTo(0, -22);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(0, -20);
-  ctx.lineTo(18, -4);
-  ctx.lineTo(0, 10);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(240,240,255,0.92)';
-  ctx.fill();
-  ctx.restore();
+  const threat = Math.min(100, Math.round(((timeScale-1)/((level.maxTimeScale-1) || 1))*100));
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 12px "Trebuchet MS", sans-serif';
+  ctx.fillStyle = threat > 66 ? '#ff6b5e' : (threat > 33 ? '#ffcc55' : '#9fd6a0');
+  ctx.fillText('THREAT '+threat+'%', CANVAS_W - 10, 45);
 }
 
-// Level transition screen
-function drawLevelTransition() {
-  drawOcean();
-  drawWake();
-  ctx.fillStyle = 'rgba(5,20,40,0.75)';
-  ctx.fillRect(0, HUD_H, W, PLAY_H);
-
-  const lvl = LEVELS[currentLevel];
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 22px monospace';
-  ctx.fillText(lvl.name, W / 2, H / 2 - 40);
-
-  ctx.fillStyle = '#aad4ff';
-  ctx.font = '14px monospace';
-  const descriptions = [
-    'Calm waters ahead. Watch for slow pirate ships.',
-    'The seas are choppy. Pirates move at angles!',
-    'Enter the Pirate Alley. Zigzag patterns ahead!',
-    'Storm Chase! Fast pirates accelerating your way.',
-    'The Gauntlet! All patterns — survive to win!',
-  ];
-  ctx.fillText(descriptions[currentLevel] || '', W / 2, H / 2 + 0);
-
-  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#fff' : '#7ecfff';
-  ctx.font = 'bold 14px monospace';
-  ctx.fillText('PRESS SPACE TO CONTINUE', W / 2, H / 2 + 50);
-
-  if (currentLevel > 0) {
-    ctx.fillStyle = '#7ecfff';
-    ctx.font = '13px monospace';
-    ctx.fillText(`Score so far: ${score}`, W / 2, H / 2 + 85);
-  }
-
-  drawHUD();
+/* ============================================================
+   SECTION 15: SCREEN RENDERERS
+   ============================================================ */
+function drawTitleBoat(cx, cy, scale){
+  const skin = SKINS.find(s=>s.id === save.selectedSkin) || SKINS[0];
+  drawBoat(cx, cy, scale, skin.hull, skin.sail, '#5a3a18', false, frame*0.1);
 }
 
-// Game over screen
-function drawGameOver() {
-  drawOcean();
-  ctx.fillStyle = 'rgba(10,5,5,0.8)';
-  ctx.fillRect(0, HUD_H, W, PLAY_H);
-
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#e74c3c';
-  ctx.font = 'bold 36px monospace';
-  ctx.fillText('SHIPWRECKED!', W / 2, H / 2 - 60);
-
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 20px monospace';
-  ctx.fillText(`Final Score: ${score}`, W / 2, H / 2 - 10);
-
-  if (score >= highScore && score > 0) {
-    ctx.fillStyle = '#2ecc71';
-    ctx.font = 'bold 14px monospace';
-    ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 20);
-  }
-
-  ctx.fillStyle = '#aaa';
-  ctx.font = '13px monospace';
-  ctx.fillText(`Best: ${highScore}`, W / 2, H / 2 + 48);
-
-  // Restart button
-  const bw = 180, bh = 40, bx = W / 2 - bw / 2, by = H / 2 + 70;
-  ctx.fillStyle = '#c0392b';
-  ctx.fillRect(bx, by, bw, bh);
-  ctx.strokeStyle = '#e74c3c';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(bx, by, bw, bh);
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 15px monospace';
-  ctx.fillText('PRESS SPACE TO RESTART', W / 2, by + 25);
-}
-
-// Win screen
-function drawWin() {
-  drawOcean();
-  ctx.fillStyle = 'rgba(0,20,10,0.8)';
-  ctx.fillRect(0, HUD_H, W, PLAY_H);
-
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 32px monospace';
-  ctx.fillText('YOU WIN!', W / 2, H / 2 - 80);
-
-  ctx.fillStyle = '#2ecc71';
-  ctx.font = 'bold 16px monospace';
-  ctx.fillText('All 5 seas conquered!', W / 2, H / 2 - 40);
-
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 20px monospace';
-  ctx.fillText(`Final Score: ${score}`, W / 2, H / 2);
-
-  if (score >= highScore) {
-    ctx.fillStyle = '#f39c12';
-    ctx.font = 'bold 14px monospace';
-    ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 30);
-  }
-
-  ctx.fillStyle = Math.floor(frameCount / 20) % 2 === 0 ? '#fff' : '#7ecfff';
-  ctx.font = 'bold 14px monospace';
-  ctx.fillText('PRESS SPACE TO PLAY AGAIN', W / 2, H / 2 + 80);
-
-  // Draw celebration stars
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2 + frameCount * 0.01;
-    const r = 80 + Math.sin(frameCount * 0.05 + i) * 10;
-    const sx = W / 2 + Math.cos(angle) * r;
-    const sy = H / 2 - 20 + Math.sin(angle) * r * 0.4;
-    drawStar(sx, sy, 5, `hsl(${(i * 45 + frameCount) % 360}, 100%, 65%)`);
-  }
-}
-
-function drawStar(x, y, r, color) {
-  ctx.save();
-  ctx.translate(x, y);
+function centerText(txt, x, y, font, color, align){
   ctx.fillStyle = color;
+  ctx.font = font;
+  ctx.textAlign = align || 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(txt, x, y);
+}
+
+function drawLock(cx, cy, s){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(230,230,230,0.85)';
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  for (let i = 0; i < 5; i++) {
-    const a = (i * 4 * Math.PI) / 5 - Math.PI / 2;
-    const ir = r * 0.4;
-    const ia = ((i * 4 + 2) * Math.PI) / 5 - Math.PI / 2;
-    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-    else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-    ctx.lineTo(Math.cos(ia) * ir, Math.sin(ia) * ir);
-  }
-  ctx.closePath();
+  ctx.arc(0, 0, s*0.7, Math.PI, 0);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(230,230,230,0.85)';
+  ctx.fillRect(-s, 0, s*2, s*1.4);
+  ctx.fillStyle = 'rgba(40,40,40,0.9)';
+  ctx.beginPath();
+  ctx.arc(0, s*0.6, s*0.25, 0, Math.PI*2);
   ctx.fill();
   ctx.restore();
 }
 
-// ============================================================
-// GAME LOOP
-// ============================================================
-function update() {
-  frameCount++;
-  oceanOffset = (oceanOffset + 1.2) % 80;
+// --- MENU ---
+function renderMenu(){
+  menuOceanFrame += 1;
+  drawOcean('#1f5e8c', '#0a1c30', 'rgba(255,255,255,0.06)', 0, CANVAS_H, menuOceanFrame);
+  const g = ctx.createLinearGradient(0,0,0,260);
+  g.addColorStop(0,'rgba(5,12,22,0.65)');
+  g.addColorStop(1,'rgba(5,12,22,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,CANVAS_W,260);
 
-  if (state === STATES.PLAYING) {
-    levelFrames++;
-    score += 1; // time-based score
+  centerText('HIGH SEAS', CANVAS_W/2, 130, 'bold 52px "Trebuchet MS", sans-serif', '#ffffff');
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 6;
+  centerText('A Sailing Adventure', CANVAS_W/2, 165, 'italic 20px "Trebuchet MS", sans-serif', '#bcdcf0');
+  ctx.restore();
 
-    updatePlayer();
-    updateParticles();
+  drawTitleBoat(CANVAS_W/2, 250 + Math.sin(frame*0.05)*6, 1.8);
 
-    // Spawn pirates — interval shrinks as scale grows
-    const lvl = LEVELS[currentLevel];
-    if (lvl) {
-      const dynamicInterval = Math.max(18, Math.floor(lvl.spawnInterval / getTimeScale()));
-      spawnTimer--;
-      if (spawnTimer <= 0) {
-        spawnPirates();
-        spawnTimer = dynamicInterval;
-      }
+  resetButtons();
+  const bw = 220, bh = 54, bx = (CANVAS_W-bw)/2;
+  addButton(bx, 360, bw, bh, 'PLAY', gotoLevelSelect, { fill:'#1f9c5a' });
+  addButton(bx, 426, bw, bh, 'SHOP', gotoShop, { fill:'#1f78c4' });
+  addButton(bx, 492, bw, bh, 'SETTINGS', gotoSettings, { fill:'#7d4fc4' });
+  drawButtons();
+
+  drawCoinIcon(CANVAS_W/2 - 40, 600, 11);
+  centerText(String(save.coins)+' coins', CANVAS_W/2 + 14, 605, 'bold 18px "Trebuchet MS", sans-serif', '#ffe680');
+
+  centerText('Arrow keys / WASD / drag to sail   -   collect coins   -   dodge pirates',
+    CANVAS_W/2, 660, '12px "Trebuchet MS", sans-serif', 'rgba(255,255,255,0.55)');
+}
+
+// --- LEVEL SELECT ---
+function renderLevelSelect(){
+  menuOceanFrame += 1;
+  drawOcean('#163a55', '#08161f', 'rgba(255,255,255,0.05)', 0, CANVAS_H, menuOceanFrame);
+  ctx.fillStyle = 'rgba(5,12,22,0.5)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  centerText('SELECT LEVEL', CANVAS_W/2, 48, 'bold 30px "Trebuchet MS", sans-serif', '#ffffff');
+
+  resetButtons();
+  const cols = 4;
+  const cellW = 96, cellH = 88;
+  const gridW = cols * cellW;
+  const startX = (CANVAS_W - gridW)/2 + 6;
+  const startY = 80;
+  const tileW = 80, tileH = 76;
+
+  for(let i=0;i<LEVELS.length;i++){
+    const lvNum = i + 1;
+    const col = i % cols, row = (i/cols)|0;
+    const x = startX + col*cellW;
+    const y = startY + row*cellH;
+    const unlocked = save.unlockedLevels.indexOf(lvNum) >= 0;
+    const completed = save.completedLevels.indexOf(lvNum) >= 0;
+
+    let fill = '#3a4654';
+    if(completed) fill = '#1f9c5a';
+    else if(unlocked) fill = '#1f78c4';
+
+    ctx.save();
+    roundRect(x, y, tileW, tileH, 10);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.stroke();
+
+    ctx.fillStyle = unlocked ? '#ffffff' : 'rgba(255,255,255,0.4)';
+    ctx.font = 'bold 26px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(lvNum), x + tileW/2, y + 24);
+
+    ctx.font = '9px "Trebuchet MS", sans-serif';
+    ctx.fillStyle = unlocked ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.35)';
+    const nm = LEVELS[i].name;
+    if(unlocked){
+      ctx.fillText(nm.length>13? nm.slice(0,12)+'..' : nm, x + tileW/2, y + 58);
+    } else {
+      drawLock(x + tileW/2, y + 50, 9);
     }
-
-    updatePirates();
-
-    // Level complete
-    if (lvl && levelFrames >= lvl.duration && pirates.length === 0) {
-      score += 500; // level bonus
-      advanceLevel();
+    if(completed){
+      ctx.fillStyle = '#ffe680';
+      ctx.font = '13px serif';
+      ctx.fillText('*', x + tileW - 12, y + 14);
     }
-  } else if (state === STATES.COLLISION) {
-    collisionTimer--;
-    updateParticles();
-    updatePlayer();
-    if (collisionTimer <= 0 && lives > 0) {
-      state = STATES.PLAYING;
+    ctx.restore();
+
+    if(unlocked){
+      (function(idx){
+        addButton(x, y, tileW, tileH, '', function(){ beginLevel(idx); },
+          { invisible:true });
+      })(i);
     }
-  } else if (state === STATES.LEVEL_TRANSITION) {
-    updateParticles();
-    updatePlayer();
+  }
+
+  const backW = 160, backH = 46;
+  addButton((CANVAS_W-backW)/2, CANVAS_H - 56, backW, backH, 'BACK', gotoMenu, { fill:'#445566' });
+  drawSingleButton(buttons[buttons.length-1]);
+}
+
+// --- SHOP ---
+let shopSelectedIdx = 0;
+function renderShop(){
+  menuOceanFrame += 1;
+  drawOcean('#1a4a6e', '#08161f', 'rgba(255,255,255,0.05)', 0, CANVAS_H, menuOceanFrame);
+  ctx.fillStyle = 'rgba(5,12,22,0.55)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  centerText('SHOP', CANVAS_W/2, 40, 'bold 30px "Trebuchet MS", sans-serif', '#ffffff');
+  drawCoinIcon(CANVAS_W/2 - 44, 62, 10);
+  centerText(String(save.coins), CANVAS_W/2 + 6, 67, 'bold 18px "Trebuchet MS", sans-serif', '#ffe680');
+
+  const sel = SKINS[shopSelectedIdx];
+  ctx.save();
+  roundRect(CANVAS_W/2 - 70, 84, 140, 100, 12);
+  ctx.fillStyle = 'rgba(20,40,60,0.6)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+  drawBoat(CANVAS_W/2, 138 + Math.sin(frame*0.05)*4, 1.9, sel.hull, sel.sail, '#5a3a18', false, frame*0.1);
+  centerText(sel.name, CANVAS_W/2, 204, 'bold 18px "Trebuchet MS", sans-serif', '#dfe9f2');
+
+  resetButtons();
+  const cols = 4, cellW = 108, cellH = 100;
+  const gridW = cols*cellW;
+  const startX = (CANVAS_W - gridW)/2 + 6;
+  const startY = 224;
+  const tileW = 96, tileH = 88;
+
+  for(let i=0;i<SKINS.length;i++){
+    const sk = SKINS[i];
+    const col = i % cols, row = (i/cols)|0;
+    const x = startX + col*cellW;
+    const y = startY + row*cellH;
+    const owned = save.ownedSkins.indexOf(sk.id) >= 0;
+    const selected = save.selectedSkin === sk.id;
+
+    ctx.save();
+    roundRect(x, y, tileW, tileH, 10);
+    ctx.fillStyle = selected ? '#1f9c5a' : (owned ? '#2b5070' : '#3a4654');
+    ctx.fill();
+    ctx.lineWidth = (shopSelectedIdx===i) ? 3 : 2;
+    ctx.strokeStyle = (shopSelectedIdx===i) ? '#ffe680' : 'rgba(255,255,255,0.18)';
+    ctx.stroke();
+    drawBoat(x + tileW/2, y + 32, 0.9, sk.hull, sk.sail, '#5a3a18', false, 0);
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(sk.name.length>13? sk.name.slice(0,12)+'..':sk.name, x + tileW/2, y + 58);
+    ctx.font = 'bold 11px "Trebuchet MS", sans-serif';
+    if(selected){ ctx.fillStyle = '#ffe680'; ctx.fillText('EQUIPPED', x + tileW/2, y + 73); }
+    else if(owned){ ctx.fillStyle = '#bfe0ff'; ctx.fillText('OWNED', x + tileW/2, y + 73); }
+    else { ctx.fillStyle = '#ffe680'; ctx.fillText(sk.cost + ' c', x + tileW/2, y + 73); }
+    ctx.restore();
+
+    (function(idx){
+      addButton(x, y, tileW, tileH, '', function(){ shopSelect(idx); }, { invisible:true });
+    })(i);
+  }
+
+  const owned = save.ownedSkins.indexOf(sel.id) >= 0;
+  const isSel = save.selectedSkin === sel.id;
+  const aw = 200, ah = 44, ax = (CANVAS_W-aw)/2, ay = startY + 2*cellH + 6;
+  let actionBtn;
+  if(isSel){
+    actionBtn = addButton(ax, ay, aw, ah, 'EQUIPPED', function(){}, { fill:'#2f7d52', enabled:false });
+  } else if(owned){
+    actionBtn = addButton(ax, ay, aw, ah, 'EQUIP', function(){ equipSkin(sel.id); }, { fill:'#1f9c5a' });
+  } else {
+    const canAfford = save.coins >= sel.cost;
+    actionBtn = addButton(ax, ay, aw, ah, 'BUY  ('+sel.cost+' c)', function(){ buySkin(sel.id); },
+      { fill: canAfford ? '#1f78c4' : '#3a4654', enabled: canAfford });
+  }
+  const backW = 160, backH = 42;
+  const backBtn = addButton((CANVAS_W-backW)/2, ay + 54, backW, backH, 'BACK', gotoMenu, { fill:'#445566' });
+
+  drawSingleButton(actionBtn);
+  drawSingleButton(backBtn);
+}
+
+function shopSelect(idx){ shopSelectedIdx = idx; }
+function buySkin(id){
+  const sk = SKINS.find(s=>s.id===id);
+  if(!sk) return;
+  if(save.ownedSkins.indexOf(id) >= 0) return;
+  if(save.coins >= sk.cost){
+    save.coins -= sk.cost;
+    save.ownedSkins.push(id);
+    save.selectedSkin = id;
+    persist();
+    Audio2.sfx('coin');
+  }
+}
+function equipSkin(id){
+  if(save.ownedSkins.indexOf(id) >= 0){
+    save.selectedSkin = id;
+    persist();
   }
 }
 
-function render() {
-  ctx.clearRect(0, 0, W, H);
+// --- SETTINGS ---
+function renderSettings(){
+  menuOceanFrame += 1;
+  drawOcean('#163a55', '#08161f', 'rgba(255,255,255,0.05)', 0, CANVAS_H, menuOceanFrame);
+  ctx.fillStyle = 'rgba(5,12,22,0.6)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
 
-  if (state === STATES.TITLE) {
-    drawTitle();
-    return;
+  centerText('SETTINGS', CANVAS_W/2, 90, 'bold 34px "Trebuchet MS", sans-serif', '#ffffff');
+
+  resetButtons();
+  const bw = 280, bh = 60, bx = (CANVAS_W-bw)/2;
+
+  addButton(bx, 200, bw, bh, 'Music: ' + (save.settings.music ? 'ON' : 'OFF'),
+    toggleMusic, { fill: save.settings.music ? '#1f9c5a' : '#7a3a3a' });
+  addButton(bx, 280, bw, bh, 'Sound FX: ' + (save.settings.sfx ? 'ON' : 'OFF'),
+    toggleSfx, { fill: save.settings.sfx ? '#1f9c5a' : '#7a3a3a' });
+
+  addButton(bx, 400, bw, bh, 'BACK', gotoMenu, { fill:'#445566' });
+
+  drawButtons();
+
+  centerText('Settings are saved automatically.', CANVAS_W/2, 500, '13px "Trebuchet MS", sans-serif', 'rgba(255,255,255,0.5)');
+}
+
+function toggleMusic(){
+  save.settings.music = !save.settings.music;
+  persist();
+  Audio2.setMusicEnabled(save.settings.music);
+}
+function toggleSfx(){
+  save.settings.sfx = !save.settings.sfx;
+  persist();
+  if(save.settings.sfx) Audio2.sfx('click');
+}
+
+// --- TRANSITION ---
+function renderTransition(){
+  drawOcean(level.oc1, level.oc2, level.wc, 0, CANVAS_H, frame);
+  ctx.fillStyle = 'rgba(5,12,22,0.55)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  centerText('LEVEL ' + (curLevelIndex+1), CANVAS_W/2, 220, 'bold 22px "Trebuchet MS", sans-serif', '#bcdcf0');
+  centerText(level.name, CANVAS_W/2, 270, 'bold 40px "Trebuchet MS", sans-serif', '#ffffff');
+  centerText(level.subtitle, CANVAS_W/2, 310, 'italic 18px "Trebuchet MS", sans-serif', '#cfe2f0');
+
+  const hazards = [];
+  if(level.fireRate > 0) hazards.push('Cannon fire');
+  if(level.fog) hazards.push('Fog');
+  if(level.wind) hazards.push('Strong wind');
+  if(level.ghost) hazards.push('Ghost ships');
+  if(level.ice) hazards.push('Ice shot');
+  if(hazards.length){
+    centerText('Hazards: ' + hazards.join('  -  '), CANVAS_W/2, 350, '14px "Trebuchet MS", sans-serif', '#ffcc88');
   }
 
-  if (state === STATES.GAME_OVER) {
-    drawGameOver();
-    drawParticles();
-    return;
+  drawTitleBoat(CANVAS_W/2, 430 + Math.sin(frame*0.06)*5, 1.6);
+
+  const blink = (Math.floor(frame/30)%2===0);
+  if(blink){
+    centerText('Press SPACE to set sail', CANVAS_W/2, 560, 'bold 22px "Trebuchet MS", sans-serif', '#ffffff');
+  }
+  resetButtons();
+  const bw = 240, bh = 50;
+  addButton((CANVAS_W-bw)/2, 590, bw, bh, 'SET SAIL', startLevelPlay, { fill:'#1f9c5a' });
+  drawButtons();
+}
+
+// --- LEVEL COMPLETE ---
+function renderLevelComplete(){
+  drawOcean(level.oc1, level.oc2, level.wc, 0, CANVAS_H, frame);
+  ctx.fillStyle = 'rgba(5,12,22,0.6)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  centerText('LEVEL COMPLETE!', CANVAS_W/2, 160, 'bold 38px "Trebuchet MS", sans-serif', '#2ecc71');
+  centerText(level.name, CANVAS_W/2, 200, 'italic 20px "Trebuchet MS", sans-serif', '#cfe2f0');
+
+  ctx.save();
+  roundRect(CANVAS_W/2-140, 250, 280, 150, 14);
+  ctx.fillStyle = 'rgba(10,25,40,0.8)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '20px "Trebuchet MS", sans-serif';
+  ctx.fillText('Score', CANVAS_W/2 - 110, 300);
+  ctx.fillText('Coins earned', CANVAS_W/2 - 110, 345);
+  ctx.fillText('Total coins', CANVAS_W/2 - 110, 385);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 20px "Trebuchet MS", sans-serif';
+  ctx.fillText(String(lastScore), CANVAS_W/2 + 115, 300);
+  ctx.fillStyle = '#ffe680';
+  ctx.fillText('+' + lastCoins, CANVAS_W/2 + 115, 345);
+  ctx.fillText(String(save.coins), CANVAS_W/2 + 115, 385);
+
+  resetButtons();
+  const bw = 200, bh = 50, bx = (CANVAS_W-bw)/2;
+  const hasNext = (curLevelIndex+1) < LEVELS.length;
+  if(hasNext){
+    addButton(bx, 440, bw, bh, 'NEXT LEVEL', advanceFromComplete, { fill:'#1f9c5a' });
+  } else {
+    addButton(bx, 440, bw, bh, 'FINISH', function(){ state = S.WIN; }, { fill:'#1f9c5a' });
+  }
+  addButton(bx, 502, bw, bh, 'MENU', gotoMenu, { fill:'#1f78c4' });
+  drawButtons();
+
+  const blink = (Math.floor(frame/30)%2===0);
+  if(blink && hasNext){
+    centerText('Press SPACE for next level', CANVAS_W/2, 590, '14px "Trebuchet MS", sans-serif', 'rgba(255,255,255,0.6)');
+  }
+}
+
+// --- GAME OVER ---
+function renderGameOver(){
+  drawOcean('#3a1010', '#0a0606', 'rgba(255,255,255,0.04)', 0, CANVAS_H, frame);
+  ctx.fillStyle = 'rgba(5,2,2,0.65)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  centerText('SHIPWRECKED', CANVAS_W/2, 200, 'bold 44px "Trebuchet MS", sans-serif', '#e74c3c');
+  centerText('Your vessel was lost to the deep.', CANVAS_W/2, 245, 'italic 18px "Trebuchet MS", sans-serif', '#e0b0b0');
+
+  ctx.save();
+  ctx.translate(CANVAS_W/2, 330);
+  ctx.rotate(Math.sin(frame*0.04)*0.25 + 0.3);
+  const skin = SKINS.find(s=>s.id===save.selectedSkin) || SKINS[0];
+  drawBoat(0, 0, 1.8, skin.hull, skin.sail, '#5a3a18', false, 0);
+  ctx.restore();
+
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '20px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Reached: Level ' + (curLevelIndex+1) + ' - ' + level.name, CANVAS_W/2, 430);
+  ctx.fillText('Score: ' + lastScore + '   Coins this run: ' + lastCoins, CANVAS_W/2, 460);
+
+  resetButtons();
+  const bw = 220, bh = 52, bx = (CANVAS_W-bw)/2;
+  addButton(bx, 500, bw, bh, 'RETRY LEVEL', function(){ beginLevel(curLevelIndex); }, { fill:'#1f9c5a' });
+  addButton(bx, 564, bw, bh, 'MENU', gotoMenu, { fill:'#1f78c4' });
+  drawButtons();
+
+  const blink = (Math.floor(frame/30)%2===0);
+  if(blink){
+    centerText('Press SPACE to retry', CANVAS_W/2, 645, '14px "Trebuchet MS", sans-serif', 'rgba(255,255,255,0.55)');
+  }
+}
+
+// --- WIN ---
+function renderWin(){
+  drawOcean('#8a6a14', '#2a2008', 'rgba(255,255,255,0.07)', 0, CANVAS_H, frame);
+  ctx.fillStyle = 'rgba(20,15,2,0.4)';
+  ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+
+  for(let i=0;i<30;i++){
+    const sx = (i*97 + frame*1.5) % CANVAS_W;
+    const sy = (i*53 + frame*2.2) % CANVAS_H;
+    ctx.fillStyle = ['#ffe680','#ffffff','#ff8866','#88ddff'][i%4];
+    ctx.fillRect(sx, sy, 3, 6);
   }
 
-  if (state === STATES.WIN) {
-    drawWin();
-    drawParticles();
-    return;
-  }
+  centerText('LEGEND OF THE SEAS', CANVAS_W/2, 180, 'bold 36px "Trebuchet MS", sans-serif', '#ffffff');
+  centerText('You conquered all 20 levels!', CANVAS_W/2, 222, 'italic 20px "Trebuchet MS", sans-serif', '#fff0c0');
 
-  if (state === STATES.LEVEL_TRANSITION) {
-    drawLevelTransition();
-    return;
-  }
+  drawTitleBoat(CANVAS_W/2, 330 + Math.sin(frame*0.05)*8, 2.4);
 
-  // Playing / Collision
-  drawOcean();
-  drawWake();
+  centerText('Total coins: ' + save.coins, CANVAS_W/2, 440, 'bold 22px "Trebuchet MS", sans-serif', '#ffe680');
+
+  resetButtons();
+  const bw = 220, bh = 52, bx = (CANVAS_W-bw)/2;
+  addButton(bx, 500, bw, bh, 'MAIN MENU', gotoMenu, { fill:'#1f78c4' });
+  addButton(bx, 564, bw, bh, 'SHOP', gotoShop, { fill:'#7d4fc4' });
+  drawButtons();
+}
+
+/* ============================================================
+   SECTION 16: GAME LOOP (update + render)
+   ============================================================ */
+function update(){
+  frame++;
+  if(state === S.PLAYING){
+    if(invincible > 0) invincible--;
+    updatePlayer();
+    updatePirates();
+    updateCannonballs();
+    updateCoins();
+    updateParticles();
+    updateLevelProgress();
+  } else {
+    updateParticles();
+  }
+}
+
+function renderPlaying(){
+  drawOcean(level.oc1, level.oc2, level.wc, PLAY_TOP, PLAY_H, levelFrames);
+
+  for(const c of coins) drawCoin(c);
+  for(const p of pirates) drawPirate(p);
+  drawCannonballs();
+  drawPlayer();
   drawParticles();
 
-  for (const p of pirates) {
-    drawPirate(p);
+  if(level.fog){
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, PLAY_TOP, CANVAS_W, PLAY_H);
+    ctx.clip();
+    const fg = ctx.createRadialGradient(player.x, player.y, 40, player.x, player.y, 220);
+    fg.addColorStop(0, 'rgba(10,15,25,0)');
+    fg.addColorStop(1, 'rgba(8,12,20,'+level.fog+')');
+    ctx.fillStyle = fg;
+    ctx.fillRect(0, PLAY_TOP, CANVAS_W, PLAY_H);
+    ctx.fillStyle = 'rgba(120,140,160,'+(level.fog*0.25)+')';
+    ctx.fillRect(0, PLAY_TOP, CANVAS_W, PLAY_H);
+    ctx.restore();
   }
 
-  drawPlayer();
+  if(level.wind){
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = 'rgba(200,220,255,0.6)';
+    ctx.lineWidth = 2;
+    for(let i=0;i<5;i++){
+      const wy = PLAY_TOP + 40 + ((frame*3 + i*120) % PLAY_H);
+      const wx = (frame*4 + i*90) % (CANVAS_W+60) - 30;
+      ctx.beginPath();
+      ctx.moveTo(wx, wy);
+      ctx.lineTo(wx+24, wy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   drawHUD();
 
-  // Collision flash overlay
-  if (state === STATES.COLLISION) {
-    const alpha = Math.min(0.6, collisionTimer / 90 * 0.6);
-    ctx.fillStyle = `rgba(255, 50, 50, ${alpha})`;
-    ctx.fillRect(0, HUD_H, W, PLAY_H);
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 28px monospace';
-    ctx.fillText(lives > 0 ? 'COLLISION!' : 'SUNK!', W / 2, H / 2);
+  if(invincible > 80){
+    centerText('GET READY', CANVAS_W/2, PLAY_TOP + PLAY_H/2,
+      'bold 34px "Trebuchet MS", sans-serif', 'rgba(255,255,255,0.85)');
   }
 }
 
-function gameLoop() {
+function render(){
+  ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
+  switch(state){
+    case S.MENU:           renderMenu(); break;
+    case S.LEVEL_SELECT:   renderLevelSelect(); break;
+    case S.SHOP:           renderShop(); break;
+    case S.SETTINGS:       renderSettings(); break;
+    case S.TRANSITION:     renderTransition(); break;
+    case S.PLAYING:        renderPlaying(); break;
+    case S.LEVEL_COMPLETE: renderLevelComplete(); break;
+    case S.GAME_OVER:      renderGameOver(); break;
+    case S.WIN:            renderWin(); break;
+  }
+}
+
+function loop(){
   update();
   render();
-  requestAnimationFrame(gameLoop);
+  requestAnimationFrame(loop);
 }
 
-// ============================================================
-// MOUSE CLICK (for restart button on game over)
-// ============================================================
-canvas.addEventListener('click', e => {
-  const rect = canvas.getBoundingClientRect();
-  const mx = (e.clientX - rect.left) * (W / rect.width);
-  const my = (e.clientY - rect.top) * (H / rect.height);
+/* ============================================================
+   SECTION 17: CLICK HANDLER + NAV
+   ============================================================ */
+function handleClick(x, y){
+  buttonsClick(x, y);
+}
 
-  if (state === STATES.GAME_OVER || state === STATES.WIN) {
-    resetGame();
-  } else if (state === STATES.TITLE) {
-    startGame();
-  } else if (state === STATES.LEVEL_TRANSITION) {
-    state = STATES.PLAYING;
-  }
-});
+function gotoMenu(){ state = S.MENU; }
+function gotoLevelSelect(){ state = S.LEVEL_SELECT; }
+function gotoShop(){
+  const idx = SKINS.findIndex(s=>s.id===save.selectedSkin);
+  shopSelectedIdx = idx >= 0 ? idx : 0;
+  state = S.SHOP;
+}
+function gotoSettings(){ state = S.SETTINGS; }
 
-// Start the loop
-requestAnimationFrame(gameLoop);
+/* ============================================================
+   SECTION 18: UTILITIES + INIT
+   ============================================================ */
+function rectOverlap(ax, ay, aw, ah, bx, by, bw, bh){
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function init(){
+  loadSave();
+  level = LEVELS[0];
+  curLevelIndex = 0;
+  state = S.MENU;
+  requestAnimationFrame(loop);
+}
+
+init();
 </script>
 </body>
 </html>
